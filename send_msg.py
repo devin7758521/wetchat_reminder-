@@ -118,11 +118,13 @@ if __name__ == "__main__":
     all_codes = get_all_a_stocks()
     hit_list = []
 
+    # 遍历全市场股票筛选
     for code in all_codes:
         if check_signal(code):
             print("✅ 命中:", code)
             hit_list.append(code)
 
+    # 有符合条件的股票 → 发选股信号
     if hit_list:
         msg = "📈 全市场日线三金叉选股信号\n"
         msg += "✅ 价格上穿25日线\n"
@@ -132,5 +134,8 @@ if __name__ == "__main__":
         msg += "✅ 周线多头\n\n"
         msg += "触发股票：\n" + "\n".join([f"• {c}" for c in hit_list])
         send_wechat_work_msg(msg)
+    # 没有符合条件的股票 → 发“今日无信号”提醒
     else:
+        msg = "📊 全市场选股结果\n今日暂无符合日线三金叉条件的股票，继续观望～"
+        send_wechat_work_msg(msg)
         print("暂无符合条件股票")
