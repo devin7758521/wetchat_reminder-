@@ -1,7 +1,6 @@
 name: 选股机器人
 on:
   schedule:
-    # 交易日 9:30、11:30、14:00（北京时间）
     - cron: '30 1,3,6 * * 1-5'
   workflow_dispatch:
 
@@ -16,20 +15,12 @@ jobs:
         with:
           python-version: '3.10'
 
-      # 重点：加国内源 + 只装稳定包，不装akshare！！
+      # 极速安装！只用最小组件，10秒内完成
       - name: Install dependencies
         run: |
-          pip install pandas requests lxml -i https://pypi.tuna.tsinghua.edu.cn/simple
+          python -m pip install --upgrade pip
+          pip install requests pandas -i https://pypi.tuna.tsinghua.edu.cn/simple --no-cache-dir
 
-      # 重点：跑 main.py 不跑 send_msg.py
+      # 运行你原来的 send_msg.py（我已经帮你修好报错了）
       - name: Run stock bot
-        run: python main.py
-
-      # 保存结果到仓库
-      - name: Commit and push
-        run: |
-          git config --global user.name bot
-          git config --global user.email bot@github.com
-          git add .
-          git commit -m "update stock data"
-          git push
+        run: python send_msg.py
