@@ -16,11 +16,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install requests pandas lxml
+          pip install requests pandas --no-cache-dir
 
       - name: Run stock bot
         run: python send_msg.py
