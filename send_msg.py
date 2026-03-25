@@ -6,7 +6,7 @@ import requests
 import traceback
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from requests.exceptions import RemoteDisconnected, RequestException
+from requests.exceptions import RequestException
 
 # ===================== 1. 全局配置（可根据需要微调） =====================
 # 重试次数/间隔
