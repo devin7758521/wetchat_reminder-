@@ -44,6 +44,18 @@ def get_stock_list():
             df = pd.read_html(r.text)[0]
             df = df[["代码", "名称"]].rename(columns={"代码":"code", "名称":"name"})
             df = df.drop_duplicates(subset=["code"])
+
+            # ===================== 【优化：自动过滤】 =====================
+            # 排除创业板 300 / 301
+            df = df[~df["code"].astype(str).str.startswith(("300", "301"))]
+            # 排除科创板 688
+            df = df[~df["code"].astype(str).str.startswith("688")]
+            # 排除北交所 8
+            df = df[~df["code"].astype(str).str.startswith("8")]
+            # 排除 ST、*ST
+            df = df[~df["name"].str.contains("ST|\\*ST", na=False)]
+            # ==============================================================
+
             print(f"✅ 获取股票列表成功：{len(df)} 只")
             return df
         except Exception as e:
@@ -65,7 +77,7 @@ def stock_selector_robot():
             return
 
         print("\n✅ 启动成功！")
-        print(f"📊 共 {len(stock_list)} 只A股")
+        print(f"📊 共 {len(stock_list)} 只A股（已过滤ST/创业/科创/北交所）")
         print("\n📋 前10只股票：")
         print(stock_list.head(10).to_string(index=False))
 
