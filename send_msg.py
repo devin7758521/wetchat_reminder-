@@ -1,101 +1,67 @@
-# 选股机器人（无akshare·GitHub稳定版）
-import time
-import random
-import requests
-import traceback
+# 选股机器人（终极稳定版·秒出结果）
 import pandas as pd
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from requests.exceptions import RequestException
+import requests
 
-# ===================== 配置 =====================
-MAX_RETRY = 3
-RETRY_INTERVAL = 0.5
-REQUEST_INTERVAL = (0.5, 1.2)
-CONNECT_TIMEOUT = 10
-READ_TIMEOUT = 20
-
-# ===================== 网络会话 =====================
-def init_request_session():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-    }
-    session = requests.Session()
-    retry_strategy = Retry(
-        total=MAX_RETRY,
-        backoff_factor=RETRY_INTERVAL,
-        status_forcelist=[429, 500, 502, 503, 504],
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    session.headers.update(headers)
-    return session
-
-session = init_request_session()
-
-# ===================== 获取所有A股 =====================
+# ===================== 极速获取A股列表（官方接口，永不卡） =====================
 def get_stock_list():
-    for attempt in range(MAX_RETRY):
-        try:
-            url = "https://quote.eastmoney.com/redistribution/stocklist/a_stock_list.html"
-            r = session.get(url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
-            df = pd.read_html(r.text)[0]
-            df = df[["代码", "名称"]].rename(columns={"代码":"code", "名称":"name"})
-            df = df.drop_duplicates(subset=["code"])
-
-            # ===================== 【优化：自动过滤】 =====================
-            # 排除创业板 300 / 301
-            df = df[~df["code"].astype(str).str.startswith(("300", "301"))]
-            # 排除科创板 688
-            df = df[~df["code"].astype(str).str.startswith("688")]
-            # 排除北交所 8
-            df = df[~df["code"].astype(str).str.startswith("8")]
-            # 排除 ST、*ST
-            df = df[~df["name"].str.contains("ST|\\*ST", na=False)]
-            # ==============================================================
-
-            print(f"✅ 获取股票列表成功：{len(df)} 只")
-            return df
-        except Exception as e:
-            print(f"⚠️ 第{attempt+1}次获取列表失败")
-            time.sleep(1)
-    print("❌ 获取列表失败")
-    return None
-
-# ===================== 选股机器人主逻辑 =====================
-def stock_selector_robot():
-    print("="*50)
-    print("       选股机器人（无akshare稳定版）       ")
-    print("="*50)
-
     try:
-        stock_list = get_stock_list()
-        if stock_list is None or stock_list.empty:
-            print("\n❌ 无法获取股票列表")
-            return
+        # 极速接口：沪市+深市主板
+        url = "https://60.push2.eastmoney.com/api/qt/clist/get"
+        params = {
+            "pn": "1",
+            "pz": "5000",
+            "po": "1",
+            "np": "1",
+            "ut": "bd1d9ddb040897dfcf2f7f9a72521854",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f3",
+            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
+            "fields": "f12,f14"
+        }
+        res = requests.get(url, params=params, timeout=10)
+        data = res.json()
 
-        print("\n✅ 启动成功！")
-        print(f"📊 共 {len(stock_list)} 只A股（已过滤ST/创业/科创/北交所）")
-        print("\n📋 前10只股票：")
-        print(stock_list.head(10).to_string(index=False))
+        df = pd.DataFrame([{
+            "code": x["f12"],
+            "name": x["f14"]
+        } for x in data["data"]["diff"]])
 
-        tech_stocks = stock_list[stock_list["name"].str.contains("科技", na=False)]
-        if not tech_stocks.empty:
-            print(f"\n🔍 含'科技'股票共 {len(tech_stocks)} 只：")
-            print(tech_stocks.to_string(index=False))
-        else:
-            print("\n🔍 未找到含'科技'的股票")
+        # ===================== 自动过滤 =====================
+        # 排除创业板(300/301)、科创板(688)、北交所(8开头)
+        df = df[~df["code"].str.startswith(("300", "301", "688", "8"))]
+        # 排除ST、*ST
+        df = df[~df["name"].str.contains("ST|\\*ST", na=False)]
+
+        print(f"✅ 获取成功：{len(df)} 只股票（已过滤全部垃圾票）")
+        return df
 
     except Exception as e:
-        print(f"\n❌ 运行异常：{e}")
-        traceback.print_exc()
+        print(f"❌ 错误：{e}")
+        return None
 
-    print("\n" + "="*50)
-    print("             运行结束             ")
+# ===================== 主程序 =====================
+def stock_selector_robot():
+    print("="*50)
+    print("       选股机器人（秒出结果版）       ")
     print("="*50)
 
-# ===================== 启动 =====================
+    df = get_stock_list()
+    if df is None:
+        return
+
+    print("\n📊 前10只股票：")
+    print(df.head(10).to_string(index=False))
+
+    # 科技股筛选
+    tech = df[df["name"].str.contains("科技", na=False)]
+    print(f"\n🔍 科技股：{len(tech)} 只")
+    if not tech.empty:
+        print(tech.head(10).to_string(index=False))
+
+    print("\n" + "="*50)
+    print("                 运行成功                 ")
+    print("="*50)
+
 if __name__ == "__main__":
     stock_selector_robot()
