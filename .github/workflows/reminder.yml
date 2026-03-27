@@ -21,7 +21,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt --no-cache-dir
+          # 直接安装所有依赖，强制包含tushare，不依赖requirements.txt
+          pip install requests pandas tushare --no-cache-dir
 
       - name: Run stock bot
         run: python send_msg.py
