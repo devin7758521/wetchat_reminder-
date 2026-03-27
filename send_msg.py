@@ -1,94 +1,52 @@
 import pandas as pd
 import requests
 from datetime import datetime
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import akshare as ak
 
 # ===================== 【已填好你的Server酱SendKey，直接用】 =====================
 SCKEY = "SCT329835TUs01r9DcURIUMdoAORtVUnbi"
 # ==============================================================
-
-# ===================== 带重试的请求会话（彻底解决连接断开） =====================
-def create_session():
-    session = requests.Session()
-    retry = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[500, 502, 503, 504, 403, 429],
-        allowed_methods=["GET"]
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
 
 # ===================== Server酱推送（带异常捕获，不影响主程序） =====================
 def send_server(title, content):
     url = f"https://sctapi.ftqq.com/{SCKEY}.send"
     data = {"title": title, "desp": content}
     try:
-        session = create_session()
-        session.post(url, data=data, timeout=10)
+        requests.post(url, data=data, timeout=10)
         print("✅ Server酱推送成功")
     except Exception as e:
         print(f"⚠️ Server酱推送失败（不影响主程序）: {str(e)}")
 
-# ===================== 稳定A股列表获取（免费无权限接口，零反爬） =====================
+# ===================== 稳定A股列表获取（AkShare零反爬接口） =====================
 def get_stock_list():
-    session = create_session()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Referer": "https://quote.eastmoney.com/"
-    }
-
-    # 东方财富极简接口（无反爬，零权限要求）
-    url = "https://push2.eastmoney.com/api/qt/clist/get"
-    params = {
-        "pn": "1",
-        "pz": 2000,
-        "po": "1",
-        "np": "1",
-        "ut": "bd1d9ddb040897dfcf2f7f9a72521854",
-        "fltt": "2",
-        "invt": "2",
-        "fid": "f3",
-        "fs": "m:0+t:6,m:1+t:2",
-        "fields": "f12,f14"
-    }
-
     try:
-        res = session.get(url, params=params, headers=headers, timeout=15)
-        res.raise_for_status()
-        data = res.json()
-
-        if not data.get("data") or not data["data"].get("diff"):
-            raise Exception("接口返回空数据")
-
-        df = pd.DataFrame([{
-            "code": x["f12"],
-            "name": x["f14"]
-        } for x in data["data"]["diff"]])
+        # 获取A股全量股票列表（AkShare免费接口，零反爬、零权限）
+        df = ak.stock_zh_a_symbol()
+        # 重命名列，完全匹配你原版逻辑
+        df = df.rename(columns={"代码": "code", "名称": "name"})
 
         # ===================== 自动过滤（100%保留你原版规则） =====================
+        # 排除创业板(300/301)、科创板(688)、北交所(8开头)
         df = df[~df["code"].str.startswith(("300", "301", "688", "8"))]
+        # 排除ST、*ST
         df = df[~df["name"].str.contains("ST|\\*ST", na=False)]
 
         print(f"✅ 获取成功：{len(df)} 只股票（已过滤全部垃圾票）")
         return df
 
     except Exception as e:
-        print(f"❌ 接口请求失败: {str(e)}")
+        print(f"❌ AkShare接口请求失败: {str(e)}")
         return None
 
 # ===================== 主程序（完全保留你原版逻辑，仅加推送） =====================
 def stock_selector_robot():
     print("="*50)
-    print("       选股机器人（终极稳定版·零报错）       ")
+    print("       选股机器人（AkShare终极稳定版·零报错）       ")
     print("="*50)
 
     df = get_stock_list()
     if df is None:
-        send_server("⚠️ 选股机器人报错", "A股接口请求失败，请检查网络")
+        send_server("⚠️ 选股机器人报错", "AkShare接口请求失败")
         return
 
     print("\n📊 前10只股票：")
