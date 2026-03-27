@@ -23,7 +23,6 @@ def get_stock_list():
     try:
         df = pro.stock_basic(exchange='', list_status='L', fields='ts_code,symbol,name')
         df = df.rename(columns={"symbol": "code", "name": "name"})
-        # 100%保留你原版过滤规则
         df = df[~df["code"].str.startswith(("300", "301", "688", "8"))]
         df = df[~df["name"].str.contains("ST|\\*ST", na=False)]
         print(f"✅ 获取成功：{len(df)} 只股票（已过滤全部垃圾票）")
