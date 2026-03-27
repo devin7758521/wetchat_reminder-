@@ -21,7 +21,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install requests pandas urllib3 --no-cache-dir
+          pip install requests pandas akshare --no-cache-dir
 
       - name: Run stock bot
         run: python send_msg.py
