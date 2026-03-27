@@ -17,13 +17,13 @@ def send_server(title, content):
     except Exception as e:
         print(f"⚠️ Server酱推送失败（不影响主程序）: {str(e)}")
 
-# ===================== 稳定A股列表获取（AkShare零反爬接口） =====================
+# ===================== 稳定A股列表获取（AkShare最新正确接口） =====================
 def get_stock_list():
     try:
-        # 获取A股全量股票列表（AkShare免费接口，零反爬、零权限）
-        df = ak.stock_zh_a_symbol()
+        # AkShare最新正确接口：stock_zh_a_spot() 获取A股实时行情（包含股票代码/名称）
+        df = ak.stock_zh_a_spot()
         # 重命名列，完全匹配你原版逻辑
-        df = df.rename(columns={"代码": "code", "名称": "name"})
+        df = df.rename(columns={"symbol": "code", "name": "name"})
 
         # ===================== 自动过滤（100%保留你原版规则） =====================
         # 排除创业板(300/301)、科创板(688)、北交所(8开头)
