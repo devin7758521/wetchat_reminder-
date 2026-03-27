@@ -24,36 +24,35 @@ def send_wechat(content):
     except:
         pass
 
-# ===================== 核心：严格过滤主板 =====================
+# ===================== 核心：修正后的全量名单获取 =====================
 def get_strictly_main_board():
-    """获取纯净的主板股票池"""
+    """彻底解决58只问题：获取全量主板名单"""
     try:
-        df = ak.stock_zh_a_spot_em()
-        code_col = [c for c in df.columns if '代码' in c][0]
-        name_col = [c for c in df.columns if '名称' in c][0]
-        vol_col = [c for c in df.columns if '成交量' in c][0]
+        # 换用这个接口，它只返回代码和名称，不返回行情，极其稳定且全
+        df = ak.stock_info_a_code_name()
         
-        df[code_col] = df[code_col].astype(str).str.zfill(6)
+        # 1. 格式化代码为6位字符串
+        df['code'] = df['code'].astype(str).str.zfill(6)
         
-        # 仅保留 60/00 开头的主板，排除 ST 和 停牌
+        # 2. 严格过滤条件：
+        # 仅保留 60 (沪市主板) 和 00 (深市主板)
+        # 排除所有含有 ST 的名称
         main_mask = (
-            (df[code_col].str.startswith(('60', '00'))) & 
-            (~df[name_col].str.contains("ST|\\*ST", na=False)) &
-            (df[vol_col] > 0)
+            (df['code'].str.startswith(('60', '00'))) & 
+            (~df['name'].str.contains("ST|\\*ST", na=False))
         )
         
-        res = df[main_mask][[code_col, name_col]].copy()
-        res.columns = ["code", "name"]
+        res = df[main_mask][['code', 'name']].copy()
         return res
     except Exception as e:
         print(f"Failed to fetch stock list: {e}")
         return pd.DataFrame()
 
-# ===================== 均量线逻辑 (优化下载量) =====================
+# ===================== 均量线逻辑 =====================
 def check_strategy(code):
     """5/60日均量粘合向上逻辑"""
     try:
-        # 抓取最近 100 天数据
+        # 只抓取最近 100 天数据计算均线，防止请求过大被封
         start_dt = (datetime.now() - timedelta(days=100)).strftime("%Y%m%d")
         
         df = ak.stock_zh_a_hist(
@@ -66,7 +65,7 @@ def check_strategy(code):
         if df is None or len(df) < 60:
             return False
 
-        # 计算均量线
+        # 统一列名计算
         v_col = [c for c in df.columns if '成交量' in c][0]
         v_series = df[v_col]
         
@@ -82,7 +81,7 @@ def check_strategy(code):
 
         # 条件 A: 5日与60日均量粘合 (3%以内)
         cond_bind = abs(last_v5 - last_v60) / last_v60 <= 0.03
-        # 条件 B: 5日均量趋势向上 (连增)
+        # 条件 B: 5日均量趋势向上 (连续两日增长)
         cond_up = last_v5 > prev_v5 > pprev_v5
         
         return True if (cond_bind and cond_up) else False
@@ -97,11 +96,12 @@ def main():
     
     stocks = get_strictly_main_board()
     if stocks.empty:
-        print("❌ Failed to get stock pool.")
+        print("❌ Error: Stock list is empty!")
         return
 
     total = len(stocks)
-    print(f"📊 Analyzing {total} main board stocks...")
+    # 这行打印至关重要，你运行后看这里是不是 3000 左右
+    print(f"📊 Confirmed: Analyzing {total} main board stocks...")
     
     hit_list = []
     
@@ -112,7 +112,7 @@ def main():
             hit_list.append(f"{code} {name}")
             print(f"🎯 Target Found: {code} {name}")
         
-        # 节奏控制：每 100 只歇 1 秒
+        # 节奏控制
         if (i + 1) % 100 == 0:
             print(f"Progress: {i+1}/{total}...")
             time.sleep(1)
@@ -129,7 +129,7 @@ def main():
     if hit_list:
         msg += f"🔥 Hits ({len(hit_list)}): \n" + "\n".join(hit_list)
     else:
-        msg += "✅ No strategy matches found today."
+        msg += "✅ Scan complete, no matches today."
     
     msg += f"\n----------------------------\nTotal: {total} | Duration: {duration}s"
     
