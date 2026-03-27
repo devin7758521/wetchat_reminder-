@@ -1,122 +1,146 @@
 import pandas as pd
 import requests
-from datetime import datetime, timedelta, timezone
 import akshare as ak
 import warnings
+import os
+import time
+from datetime import datetime, timedelta
+
 warnings.filterwarnings("ignore")
 
-# ===================== 你的微信推送KEY =====================
-WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=da748662-f3d1-4edd-8031-2ee05c428605"
+# ===================== 配置信息 =====================
+WEBHOOK_KEY = os.getenv("WEBHOOK_KEY", "")
+WEBHOOK_URL = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEBHOOK_KEY}"
 
-# ===================== 获取正确北京时间 =====================
 def beijing_time():
+    """获取北京时间（GitHub 时区为 UTC）"""
     return (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
 
-# ===================== 微信推送 =====================
 def send_wechat(content):
+    """企业微信机器人推送"""
+    if not WEBHOOK_KEY:
+        print("⚠️ 未设置 WEBHOOK_KEY，跳过推送")
+        return
+
     try:
         data = {"msgtype": "text", "text": {"content": content}}
-        requests.post(WEBHOOK_URL, json=data, timeout=10)
-        print("✅ 推送成功")
+        res = requests.post(WEBHOOK_URL, json=data, timeout=10)
+        if res.status_code == 200:
+            print("✅ 微信推送成功")
+        else:
+            print(f"⚠️ 推送返回异常: {res.text}")
     except Exception as e:
         print(f"⚠️ 推送失败: {str(e)}")
 
-# ===================== 你的均量线条件 =====================
+# ===================== 获取主板股票池 =====================
+def get_main_board_stocks():
+    try:
+        df = ak.stock_zh_a_spot_em()
+
+        if df.empty:
+            return pd.DataFrame()
+
+        # 自动识别代码/名称列
+        code_col = [c for c in df.columns if "代码" in c or "code" in c.lower()][0]
+        name_col = [c for c in df.columns if "名称" in c or "name" in c.lower()][0]
+
+        # 格式化代码
+        df[code_col] = df[code_col].astype(str).str.zfill(6)
+
+        # 主板筛选：60/00 开头，排除 ST、创业板、科创板、北交所
+        main_mask = (
+            (df[code_col].str.startswith(("60", "00")))
+            & (~df[code_col].str.startswith(("300", "301", "688", "43", "83", "87")))
+            & (~df[name_col].str.contains("ST|\*ST", na=False))
+        )
+
+        result = df[main_mask][[code_col, name_col]].copy()
+        result.columns = ["code", "name"]
+        print(f"📊 主板股票池：{len(result)} 只")
+        return result
+
+    except Exception as e:
+        print(f"❌ 获取股票池错误: {e}")
+        return pd.DataFrame()
+
+# ===================== 均量线选股条件 =====================
 def check_volume_condition(code):
     try:
-        # 只取近120天数据+2秒超时，避免接口限流
-        df = ak.stock_zh_a_daily(symbol=code, adjust="hfq", count=120, timeout=2)
+        # 获取近80日数据
+        df = ak.stock_zh_a_daily(symbol=code, adjust="hfq", count=80, timeout=5)
+
         if len(df) < 60:
             return False
 
+        # 计算均量
         df["vol5"] = df["volume"].rolling(5).mean()
         df["vol60"] = df["volume"].rolling(60).mean()
 
-        last1, last2, last3 = df.iloc[-1], df.iloc[-2], df.iloc[-3]
-        vol5, vol60 = last1["vol5"], last1["vol60"]
+        last1 = df.iloc[-1]
+        last2 = df.iloc[-2]
+        last3 = df.iloc[-3]
 
-        # 条件1：5日均量与60日均量相差≤3%
-        if vol60 == 0 or abs(vol5 - vol60) / vol60 > 0.03:
+        v5 = last1["vol5"]
+        v60 = last1["vol60"]
+
+        if v60 == 0:
             return False
 
-        # 条件2：5日均量线从下往上（连续2天向上）
-        if not (last2["vol5"] > last3["vol5"] and last1["vol5"] > last2["vol5"]):
-            return False
+        # 条件1：5日与60日均量粘合 ≤3%
+        cond1 = abs(v5 - v60) / v60 <= 0.03
 
-        return True
+        # 条件2：5日均量连续两日向上
+        cond2 = last1["vol5"] > last2["vol5"] > last3["vol5"]
+
+        # 条件3：未停牌
+        cond3 = last1["volume"] > 0
+
+        return cond1 and cond2 and cond3
+
     except:
         return False
 
-# ===================== 核心修复：无tqdm+完整主板池+100%异常捕获 =====================
-def get_main_board_stocks():
-    # 用stock_zh_a_spot获取当日活跃主板票，快速稳定
-    df = ak.stock_zh_a_spot()
-    
-    # 严格筛选主板A股
-    main_board_df = df[
-        df["代码"].str.match(r'^(60|00|001)') &
-        ~df["代码"].str.startswith(("9", "300", "301", "688", "8")) &
-        ~df["名称"].str.contains("ST|\\*ST", na=False)
-    ]
-    
-    print(f"✅ 主板股票池数量：{len(main_board_df)} 只")
-    return main_board_df[["代码", "名称"]].rename(columns={"代码": "code", "名称": "name"})
-
 # ===================== 主程序 =====================
 def main():
-    print("="*60)
-    print("       主板+均量线条件 选股机器人（零崩溃版）       ")
-    print("="*60)
+    start_time = time.time()
+    now_str = beijing_time()
+    print(f"🚀 开始选股 {now_str}")
 
-    # 1. 获取主板股票池
+    # 1. 获取股票池
     stock_df = get_main_board_stocks()
     if stock_df.empty:
-        msg = f"【选股结果】{beijing_time()}\n\n❌ 未获取到主板股票数据"
-        print(msg)
+        msg = f"【选股结果】{now_str}\n\n❌ 未能获取股票列表"
         send_wechat(msg)
         return
 
-    # 2. 逐只检测条件（彻底删除tqdm，避免渲染崩溃）
-    print("\n开始筛选均量线条件...")
-    results = []
+    # 2. 遍历筛选
+    hit_list = []
     total = len(stock_df)
-    # 手动打印进度，不依赖tqdm，100%稳定
+
+    print("开始均量线筛选...")
     for i, (_, row) in enumerate(stock_df.iterrows()):
-        try:
-            is_ok = check_volume_condition(row["code"])
-            results.append(is_ok)
-            # 每100只打印一次进度，避免刷屏
-            if (i+1) % 100 == 0 or i == total-1:
-                print(f"已完成：{i+1}/{total}")
-        except:
-            results.append(False)
-            if (i+1) % 100 == 0 or i == total-1:
-                print(f"已完成：{i+1}/{total}")
-    
-    stock_df["meet_condition"] = results
-    result_df = stock_df[stock_df["meet_condition"] == True]
+        if check_volume_condition(row["code"]):
+            hit_list.append(f"{row['code']} {row['name']}")
 
-    # 3. 整理推送内容
-    now = beijing_time()
-    msg = f"【选股结果】{now}\n\n"
-    msg += "筛选条件：\n"
-    msg += "✅ 纯主板A股（60/00/001）\n"
-    msg += "✅ 非ST、非创业板/科创/北交所/B股\n"
-    msg += "✅ 5日均量与60日均量相差≤3%\n"
-    msg += "✅ 5日均量线从下往上（拐头向上）\n\n"
-    msg += f"📊 主板股票池总数：{len(stock_df)} 只\n"
+        if (i + 1) % 200 == 0 or i == total - 1:
+            print(f"进度：{i+1}/{total}")
 
-    if result_df.empty:
-        msg += "✅ 今日无符合条件股票"
+    # 3. 生成推送消息
+    msg = f"【选股结果】{now_str}\n"
+    msg += "----------------------------\n"
+    msg += "筛选条件：主板A股 | 5/60均量线粘合向上\n"
+    msg += f"总扫描：{total} 只\n"
+
+    if not hit_list:
+        msg += "✅ 今日暂无符合条件股票"
     else:
-        msg += f"✅ 符合条件共：{len(result_df)} 只\n\n"
-        msg += "股票列表：\n"
-        for _, row in result_df.iterrows():
-            msg += f"{row['code']}  {row['name']}\n"
+        msg += f"🔥 共选出 {len(hit_list)} 只：\n"
+        msg += "\n".join(hit_list)
 
-    print("\n" + "="*60)
-    print(msg)
-    print("="*60)
+    duration = int(time.time() - start_time)
+    msg += f"\n----------------------------\n耗时：{duration} 秒"
+
+    print("\n" + msg)
     send_wechat(msg)
 
 if __name__ == "__main__":
