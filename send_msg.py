@@ -1,27 +1,71 @@
-name: 选股机器人
-on:
-  schedule:
-    - cron: '30 1,3,6 * * 1-5'
-  workflow_dispatch:
+import pandas as pd
+import requests
+from datetime import datetime
+import tushare as ts
 
-jobs:
-  run_bot:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
+# ===================== 【已全部填好，直接用】 =====================
+SCKEY = "SCT329835TUs01r9DcURIUMdoAORtVUnbi"
+TUSHARE_TOKEN = "e740112b2e4860dcbc4a7edf1719783715e1ec3d3e8208974d9fe391"
+# ==============================================================
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
+pro = ts.pro_api(TUSHARE_TOKEN)
 
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install requests pandas tushare --no-cache-dir
+def send_server(title, content):
+    url = f"https://sctapi.ftqq.com/{SCKEY}.send"
+    data = {"title": title, "desp": content}
+    try:
+        requests.post(url, data=data, timeout=10)
+        print("✅ Server酱推送成功")
+    except Exception as e:
+        print(f"⚠️ Server酱推送失败（不影响主程序）: {str(e)}")
 
-      - name: Run stock bot
-        run: python send_msg.py
+def get_stock_list():
+    try:
+        df = pro.stock_basic(exchange='', list_status='L', fields='ts_code,symbol,name')
+        df = df.rename(columns={"symbol": "code", "name": "name"})
+        # 100%保留你原版过滤规则
+        df = df[~df["code"].str.startswith(("300", "301", "688", "8"))]
+        df = df[~df["name"].str.contains("ST|\\*ST", na=False)]
+        print(f"✅ 获取成功：{len(df)} 只股票（已过滤全部垃圾票）")
+        return df
+    except Exception as e:
+        print(f"❌ Tushare接口请求失败: {str(e)}")
+        return None
+
+def stock_selector_robot():
+    print("="*50)
+    print("       选股机器人（Tushare终极稳定版·零报错）       ")
+    print("="*50)
+
+    df = get_stock_list()
+    if df is None:
+        send_server("⚠️ 选股机器人报错", "Tushare接口请求失败，请检查Token")
+        return
+
+    print("\n📊 前10只股票：")
+    print(df.head(10).to_string(index=False))
+
+    tech = df[df["name"].str.contains("科技", na=False)]
+    print(f"\n🔍 科技股：{len(tech)} 只")
+    if not tech.empty:
+        print(tech.head(10).to_string(index=False))
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    msg = f"📈 选股机器人（{now}）\n\n"
+    msg += f"✅ 有效股票总数：{len(df)} 只\n"
+    msg += f"🔍 科技股总数：{len(tech)} 只\n\n"
+    msg += "📌 前10只股票：\n"
+    msg += df.head(10).to_string(index=False)
+    
+    if not tech.empty:
+        msg += "\n\n🔬 前10只科技股：\n"
+        msg += tech.head(10).to_string(index=False)
+
+    send_server("📈 选股机器人执行成功", msg)
+
+    print("\n" + "="*50)
+    print("                 运行成功                 ")
+    print("="*50)
+
+if __name__ == "__main__":
+    stock_selector_robot()
