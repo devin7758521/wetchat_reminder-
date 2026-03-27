@@ -2,16 +2,16 @@ name: Stock Selection Bot
 
 on:
   schedule:
-    # 这里的 cron 保持你的设置（注意 GitHub 有 10-30 分钟延迟）
-    - cron: '0 1 * * 1-5'   # 09:00
-    - cron: '0 4 * * 1-5'   # 12:00
-    - cron: '35 7 * * 1-5'  # 15:35
-  workflow_dispatch:        # 支持手动触发测试
+    # 对应北京时间 09:00, 12:00, 15:35
+    - cron: '0 1 * * 1-5'
+    - cron: '0 4 * * 1-5'
+    - cron: '35 7 * * 1-5'
+  workflow_dispatch:  # 允许在 GitHub 界面手动运行
 
 jobs:
   run_bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 90      # 调高到 90 分钟，防止主板 3000+ 股票扫描因网络慢而超时
+    timeout-minutes: 90
 
     steps:
       - name: Checkout Code
@@ -21,23 +21,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          # 开启缓存，大幅提升 pip 安装速度，减少 GitHub 环境构建时间
-          cache: 'pip' 
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # 显式安装关键库，增加 retrying 库以应对网络抖动（可选，但推荐）
           pip install pandas requests akshare --upgrade --no-cache-dir
 
       - name: Run Stock Bot
-        # 使用 -u 参数让 Python 实时打印日志（方便你在 Actions 界面即时看到扫描进度）
+        # 直接运行脚本，不再需要引用 Secret
         run: python -u send_msg.py
-        env:
-          WEBHOOK_KEY: ${{ secrets.WEBHOOK_KEY }}
-          # 告诉 AkShare 尽量使用简洁模式，减少不必要的数据下载
-          AKSHARE_MODE: 'fast'
-
-      - name: Keepalive Workflow
-        # GitHub 如果仓库 60 天没活动会停掉 Cron，加个小步骤保活
-        uses: gautamkrishnar/keepalive-workflow@v2
