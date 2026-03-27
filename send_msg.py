@@ -6,13 +6,20 @@ import akshare as ak
 # ===================== 配置 =====================
 SCKEY = "SCT329835TUs01r9DcURIUMdoAORtVUnbi"
 
-# ===================== 推送 =====================
+# ===================== 推送（修复个人微信显示） =====================
 def send_server(title, content):
     url = f"https://sctapi.ftqq.com/{SCKEY}.send"
-    data = {"title": title, "desp": content}
+    
+    # 关键修复：发纯文本，个人微信直接显示
+    content = content.replace("\n", "%0A")
+    data = {
+        "title": title,
+        "desp": content
+    }
+    
     try:
-        requests.post(url, data=data, timeout=10)
-        print("✅ Server酱推送成功")
+        requests.get(url, params=data, timeout=10)
+        print("✅ 推送成功（个人微信可显示）")
     except Exception as e:
         print(f"⚠️ 推送失败: {str(e)}")
 
@@ -91,27 +98,16 @@ def stock_selector_robot():
         send_server("📈 选股结果", "今日无符合条件的股票")
         return
 
-    # 展示
-    print("\n符合条件股票列表：")
-    print(df[["code", "name"]].to_string(index=False))
-
     # 推送内容
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    msg = f"📈 选股结果 {now}\n\n"
-    msg += f"✅ 符合条件总数：{len(df)} 只\n\n"
-    msg += "筛选条件：\n"
-    msg += "1. 纯主板 A 股\n"
-    msg += "2. 非 ST、非创业板/科创板/北交所/B股\n"
-    msg += "3. 5日均量线上穿60日均量线\n"
-    msg += "4. 周K 5周均线上穿10周均线\n\n"
+    msg = f"📈 选股结果 {now}\n"
+    msg += f"✅ 符合条件：{len(df)} 只\n\n"
     msg += "股票列表：\n"
     msg += df[["code", "name"]].to_string(index=False)
 
-    send_server("📈 选股机器人执行成功", msg)
+    send_server("📈 选股机器人", msg)
 
-    print("\n" + "="*50)
-    print("                 运行完成                 ")
-    print("="*50)
+    print("\n运行完成！")
 
 if __name__ == "__main__":
     stock_selector_robot()
