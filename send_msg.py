@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 warnings.filterwarnings("ignore")
 
 # ===================== 配置信息 =====================
+# 请再次核对这个 Key 是否与你企业微信机器人设置里的一致
 WEBHOOK_KEY = "da748662-f3d1-4edd-8031-2ee05c428605"
 WEBHOOK_URL = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEBHOOK_KEY}"
 
@@ -18,16 +19,21 @@ def beijing_time():
     return (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
 
 def send_wechat(content):
-    """发送推送至企业微信"""
+    """【带调试功能】发送推送至企业微信"""
     try:
         data = {"msgtype": "text", "text": {"content": content}}
+        # 打印调试信息到 GitHub Actions 日志
         print(f"📡 尝试推送微信... 目标Key后四位: {WEBHOOK_KEY[-4:]}")
+        
         response = requests.post(WEBHOOK_URL, json=data, timeout=15)
+        
+        # 打印微信服务器的回执内容
         print(f"📡 微信回执: {response.status_code} | 响应内容: {response.text}")
+        
         if response.status_code == 200 and '"errcode":0' in response.text:
             print("✅ 微信推送成功！")
         else:
-            print("❌ 微信推送可能失败")
+            print("❌ 微信推送可能失败，请检查回执内容")
     except Exception as e:
         print(f"❌ 微信推送执行异常: {e}")
 
@@ -40,61 +46,36 @@ def get_ai_brief(code):
     except:
         return "【行业】: 暂无数据"
 
-# ===================== 核心：多路冗余获取名单 + 动态过滤 =====================
+# ===================== 核心：多路冗余获取名单 =====================
 def get_strictly_main_board():
-    """获取名单并过滤：主板、非ST、成交额>6000W、价格>3元"""
-    base_df = pd.DataFrame()
-    # 保持你原始代码的三路冗余机制
     sources = [
         ("EastMoney", lambda: ak.stock_zh_a_spot_em()),
         ("A_Code_Name", lambda: ak.stock_info_a_code_name()),
         ("A_All_Safe", lambda: ak.stock_zh_a_s_all_safe())
     ]
-    
     for name, func in sources:
         try:
-            print(f"📡 尝试获取名单源: {name}...")
+            print(f"📡 尝试获取名单: {name}...")
             df = func()
-            if df is not None and not df.empty:
-                base_df = df
-                print(f"✅ 成功从 {name} 获取原始数据")
-                break
-        except:
-            continue
+            if df is None or df.empty: continue
+            if '代码' in df.columns: df.rename(columns={'代码': 'code'}, inplace=True)
+            if '名称' in df.columns: df.rename(columns={'名称': 'name'}, inplace=True)
+            df['code'] = df['code'].astype(str).str.zfill(6)
+            mask = (df['code'].str.startswith(('60', '00'))) & (~df['name'].astype(str).str.contains("ST|\\*ST", na=False))
             
-    if base_df.empty:
-        return pd.DataFrame()
-
-    # 标准化基础字段
-    if '代码' in base_df.columns: base_df.rename(columns={'代码': 'code'}, inplace=True)
-    if '名称' in base_df.columns: base_df.rename(columns={'名称': 'name'}, inplace=True)
-    base_df['code'] = base_df['code'].astype(str).str.zfill(6)
-
-    # --- 新增：成交额与价格过滤逻辑 ---
-    try:
-        # 获取实时行情快照（用于过滤金额和价格）
-        snapshot = ak.stock_zh_a_spot_em()[['代码', '最新价', '成交额']]
-        snapshot.columns = ['code', 'price', 'amount']
-        snapshot['code'] = snapshot['code'].astype(str).str.zfill(6)
-        
-        # 合并基础名单与行情数据
-        merged = pd.merge(base_df, snapshot, on='code', how='inner')
-        
-        # 过滤条件：主板(60/00) + 非ST + 价格>3 + 成交额>6000万
-        mask = (
-            (merged['code'].str.startswith(('60', '00'))) & 
-            (~merged['name'].astype(str).str.contains("ST|\\*ST", na=False)) &
-            (merged['price'].astype(float) > 3.0) &
-            (merged['amount'].astype(float) > 60000000)
-        )
-        res = merged[mask][['code', 'name']].copy()
-        print(f"🎯 最终过滤后待扫描个股: {len(res)} 只")
-        return res
-    except Exception as e:
-        print(f"⚠️ 行情过滤插件异常: {e}，将回退至基础过滤模式")
-        # 兜底：如果行情数据获取失败，则仅按原逻辑过滤主板和ST
-        mask = (base_df['code'].str.startswith(('60', '00'))) & (~base_df['name'].astype(str).str.contains("ST|\\*ST", na=False))
-        return base_df[mask][['code', 'name']].copy()
+            # ========== 新增筛选条件：价格3-70元 + 成交额>6000万 ==========
+            if '最新' in df.columns and '成交额' in df.columns:
+                price = pd.to_numeric(df['最新'], errors='coerce')
+                amount = pd.to_numeric(df['成交额'], errors='coerce')
+                mask &= (price > 3) & (price < 70) & (amount > 60000000)
+            # ============================================================
+            
+            res = df[mask][['code', 'name']].copy()
+            if not res.empty:
+                print(f"✅ 名单获取成功: {len(res)} 只")
+                return res
+        except: continue
+    return pd.DataFrame()
 
 # ===================== 选股逻辑：周K + 均量粘合 + 股价 > MA25 =====================
 def check_strategy(code, retries=2):
@@ -103,7 +84,7 @@ def check_strategy(code, retries=2):
             time.sleep(random.uniform(0.1, 0.3))
             start_dt = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")
             
-            # 保持 qfq 前复权
+            # 【此处已统一为 qfq 前复权，与主流行情软件一致】
             df = ak.stock_zh_a_hist(symbol=code, period="weekly", start_date=start_dt, adjust="qfq")
             
             if df is None or len(df) < 65: return False
@@ -126,8 +107,8 @@ def check_strategy(code, retries=2):
 
             # --- 3. 核心条件判定 ---
             cond_bind = abs(last_v5 - last_v60) / last_v60 <= 0.03 # 3% 粘合
-            cond_up = last_v5 > prev_v5 > pprev_v5               # 5日量连增
-            cond_price = last_price > last_ma25                  # 股价 > 25周线
+            cond_up = last_v5 > prev_v5 > pprev_v5                # 5日量连增
+            cond_price = last_price > last_ma25                   # 股价 > 25周线
             
             return cond_bind and cond_up and cond_price
         except:
@@ -140,7 +121,8 @@ def main():
     start_ts = time.time()
     now_str = beijing_time()
     
-    send_wechat(f"🚀 [AI 选股机器人] 周K级别扫描开始\n时间: {now_str}\n逻辑: 均量粘合 + 站稳MA25\n初筛: 价格>3 & 成交额>6000W")
+    # 1. 启动即发送微信提醒
+    send_wechat(f"🚀 [AI 选股机器人] 周K级别扫描开始\n时间: {now_str}\n逻辑: 均量粘合 + 站稳MA25 (前复权模式)")
     
     print(f"🚀 [选股 Bot] 启动扫描: {now_str}")
     
@@ -152,6 +134,7 @@ def main():
     total = len(stocks)
     hit_list = []
     
+    # 2. 遍历扫描
     for i, (_, row) in enumerate(stocks.iterrows()):
         code, name = row["code"], row["name"]
         if check_strategy(code):
@@ -162,12 +145,13 @@ def main():
         if (i + 1) % 200 == 0:
             print(f"进度: {i+1}/{total} (耗时: {int(time.time()-start_ts)}s)")
 
+    # 3. 结束汇总发送
     duration = int(time.time() - start_ts)
     msg = f"【周K量价研报报告】\n时间: {beijing_time()}\n"
     msg += f"----------------------------\n"
     
     if hit_list:
-        msg += f"🔥 信号命中 ({len(hit_list)}只):\n\n" + "\n\n".join(hit_list)
+        msg += "🔥 信号命中 (已通过MA25过滤):\n\n" + "\n\n".join(hit_list)
     else:
         msg += "✅ 扫描完毕，当前周K级别无符合信号。"
     
