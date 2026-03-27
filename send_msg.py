@@ -67,7 +67,7 @@ def check_strategy(code, retries=2):
             time.sleep(random.uniform(0.1, 0.3))
             # 抓取 2 年数据，确保 60 周线计算准确
             start_dt = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")
-            df = ak.stock_zh_a_hist(symbol=code, period="weekly", start_date=start_dt, adjust="hfq")
+            df = ak.stock_zh_a_hist(symbol=code, period="weekly", start_date=start_dt, adjust="qfq")
             
             if df is None or len(df) < 65: return False
 
