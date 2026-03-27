@@ -18,7 +18,7 @@ def beijing_time():
 def send_wechat(content):
     try:
         if len(content) > 2000:
-            content = content[:1900] + "\n...(内容过长已截断)"
+            content = content[:1900] + "\n...(Content too long, truncated)"
         data = {"msgtype": "text", "text": {"content": content}}
         requests.post(WEBHOOK_URL, json=data, timeout=15)
     except:
@@ -26,8 +26,8 @@ def send_wechat(content):
 
 # ===================== 核心：严格过滤主板 =====================
 def get_strictly_main_board():
+    """获取纯净的主板股票池"""
     try:
-        # 这个接口有时会打印下载进度条（如 58/58），那是正常现象
         df = ak.stock_zh_a_spot_em()
         code_col = [c for c in df.columns if '代码' in c][0]
         name_col = [c for c in df.columns if '名称' in c][0]
@@ -35,7 +35,7 @@ def get_strictly_main_board():
         
         df[code_col] = df[code_col].astype(str).str.zfill(6)
         
-        # 严格过滤：沪深主板 + 非ST + 非停牌
+        # 仅保留 60/00 开头的主板，排除 ST 和 停牌
         main_mask = (
             (df[code_col].str.startswith(('60', '00'))) & 
             (~df[name_col].str.contains("ST|\\*ST", na=False)) &
@@ -46,14 +46,14 @@ def get_strictly_main_board():
         res.columns = ["code", "name"]
         return res
     except Exception as e:
-        print(f"获取列表失败: {e}")
+        print(f"Failed to fetch stock list: {e}")
         return pd.DataFrame()
 
 # ===================== 均量线逻辑 (优化下载量) =====================
 def check_strategy(code):
+    """5/60日均量粘合向上逻辑"""
     try:
-        # 【关键优化】：只抓取最近 100 天的数据，不抓全量历史，防止被封 IP
-        # 100 天足以计算 60 日均线
+        # 抓取最近 100 天数据
         start_dt = (datetime.now() - timedelta(days=100)).strftime("%Y%m%d")
         
         df = ak.stock_zh_a_hist(
@@ -66,7 +66,7 @@ def check_strategy(code):
         if df is None or len(df) < 60:
             return False
 
-        # 计算均量线 (兼容不同版本的列名)
+        # 计算均量线
         v_col = [c for c in df.columns if '成交量' in c][0]
         v_series = df[v_col]
         
@@ -93,15 +93,15 @@ def check_strategy(code):
 def main():
     start_time = time.time()
     now_str = beijing_time()
-    print(f"🚀 启动主板全量扫描: {now_str}")
+    print(f"🚀 [Stock Selection Bot] Scanning Market: {now_str}")
     
     stocks = get_strictly_main_board()
     if stocks.empty:
-        print("❌ 未获取到主板列表")
+        print("❌ Failed to get stock pool.")
         return
 
     total = len(stocks)
-    print(f"📊 待分析主板股票: {total} 只")
+    print(f"📊 Analyzing {total} main board stocks...")
     
     hit_list = []
     
@@ -110,27 +110,28 @@ def main():
         
         if check_strategy(code):
             hit_list.append(f"{code} {name}")
-            print(f"🎯 命中: {code} {name}")
+            print(f"🎯 Target Found: {code} {name}")
         
-        # 动态调整休息节奏
+        # 节奏控制：每 100 只歇 1 秒
         if (i + 1) % 100 == 0:
-            print(f"进度: {i+1}/{total}...")
-            time.sleep(1) # 每 100 只歇 1 秒
+            print(f"Progress: {i+1}/{total}...")
+            time.sleep(1)
         else:
-            time.sleep(0.01) # 极短间隔，确保数据源不报错
+            time.sleep(0.01)
 
+    # 结果推送
     duration = int(time.time() - start_time)
-    msg = f"【选股机器人 - 全量扫描】\n"
-    msg += f"时间：{now_str}\n"
-    msg += f"逻辑：主板+5/60日均量粘合向上\n"
+    msg = f"【Stock Selection Bot - Main Board】\n"
+    msg += f"Time: {now_str}\n"
+    msg += f"Strategy: Volume MA Convergence (5/60)\n"
     msg += f"----------------------------\n"
     
     if hit_list:
-        msg += f"🔥 命中({len(hit_list)}只)：\n" + "\n".join(hit_list)
+        msg += f"🔥 Hits ({len(hit_list)}): \n" + "\n".join(hit_list)
     else:
-        msg += "✅ 扫描完成，今日无符合股票"
+        msg += "✅ No strategy matches found today."
     
-    msg += f"\n----------------------------\n总量: {total}只 | 耗时: {duration}s"
+    msg += f"\n----------------------------\nTotal: {total} | Duration: {duration}s"
     
     print(msg)
     send_wechat(msg)
