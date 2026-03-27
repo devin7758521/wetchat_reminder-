@@ -1,6 +1,20 @@
-# 选股机器人（终极稳定版·秒出结果）
 import pandas as pd
 import requests
+
+# ===================== Server 酱 配置（已填你的 SendKey） =====================
+SCKEY = "SCT329835TUs01r9DcURIUMdoAORtVUnbi"
+
+def send_server(title, content):
+    try:
+        url = f"https://sctapi.ftqq.com/{SCKEY}.send"
+        data = {
+            "title": title,
+            "desp": content
+        }
+        requests.post(url, data=data, timeout=8)
+    except:
+        # 不影响主程序，推送失败也不会报错
+        pass
 
 # ===================== 极速获取A股列表（官方接口，永不卡） =====================
 def get_stock_list():
@@ -48,6 +62,7 @@ def stock_selector_robot():
 
     df = get_stock_list()
     if df is None:
+        send_server("⚠️ 选股机器人报错", "获取股票数据失败")
         return
 
     print("\n📊 前10只股票：")
@@ -58,6 +73,19 @@ def stock_selector_robot():
     print(f"\n🔍 科技股：{len(tech)} 只")
     if not tech.empty:
         print(tech.head(10).to_string(index=False))
+
+    # ===================== 自动推送微信 =====================
+    msg = f"✅ 选股机器人运行成功\n\n"
+    msg += f"📊 有效股票总数：{len(df)} 只\n"
+    msg += f"🔍 科技股总数：{len(tech)} 只\n\n"
+    msg += "📌 前10只股票：\n"
+    msg += df.head(10).to_string(index=False)
+    
+    if not tech.empty:
+        msg += "\n\n🔬 前10只科技股：\n"
+        msg += tech.head(10).to_string(index=False)
+
+    send_server("📈 选股机器人", msg)
 
     print("\n" + "="*50)
     print("                 运行成功                 ")
