@@ -16,12 +16,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'  # 缓存依赖，提升运行速度
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install requests pandas --no-cache-dir
+          pip install requests pandas tushare --no-cache-dir
 
       - name: Run stock bot
         run: python send_msg.py
