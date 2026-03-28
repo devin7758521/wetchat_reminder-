@@ -2,23 +2,18 @@ name: Stock and ETF Multi-Bot
 
 on:
   schedule:
-    - cron: '35 3 * * 1-5'   # 11:35
-    - cron: '0 4 * * 1-5'    # 12:00
-    - cron: '30 7 * * 1-5'   # 15:30
-    - cron: '55 7 * * 1-5'   # 15:55
+    - cron: '35 3 * * 1-5'   # 北京时间 11:35
+    - cron: '0 4 * * 1-5'    # 北京时间 12:00
+    - cron: '30 7 * * 1-5'   # 北京时间 15:30
+    - cron: '55 7 * * 1-5'   # 北京时间 15:55
   workflow_dispatch:
 
 jobs:
-  # 个股任务
-  stock_job:
+  # --- 任务 1：个股扫描第一部分 (1-600名) ---
+  stock_part1:
+    # 触发条件：11:35, 15:30 或 手动运行
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '35 3 * * 1-5' || github.event.schedule == '30 7 * * 1-5'
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        part: [1, 2]
-    if: |
-      (matrix.part == 1 && (github.event.schedule == '35 3 * * 1-5' || github.event.schedule == '30 7 * * 1-5')) ||
-      (matrix.part == 2 && (github.event.schedule == '0 4 * * 1-5' || github.event.schedule == '55 7 * * 1-5')) ||
-      github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
@@ -28,12 +23,30 @@ jobs:
           cache: 'pip'
       - name: Install deps
         run: pip install pandas requests akshare lxml
-      - name: Run Stock Bot
-        run: python -u send_msg.py ${{ matrix.part }}
+      - name: Run Stock Bot Part 1
+        run: python -u send_msg.py 1
 
-  # ETF 任务
+  # --- 任务 2：个股扫描第二部分 (601-1200名) ---
+  stock_part2:
+    # 触发条件：12:00, 15:55 或 手动运行
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 4 * * 1-5' || github.event.schedule == '55 7 * * 1-5'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      - name: Install deps
+        run: pip install pandas requests akshare lxml
+      - name: Run Stock Bot Part 2
+        run: python -u send_msg.py 2
+
+  # --- 任务 3：ETF 专项扫描 ---
   etf_job:
-    if: github.event.schedule == '35 3 * * 1-5' || github.event.schedule == '30 7 * * 1-5' || github.event_name == 'workflow_dispatch'
+    # 触发条件：11:35, 15:30 或 手动运行
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '35 3 * * 1-5' || github.event.schedule == '30 7 * * 1-5'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
