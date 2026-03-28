@@ -10,10 +10,12 @@ import os
 import json
 from collections import defaultdict
 
+# 忽略环境警告
 warnings.filterwarnings("ignore")
 
-VERSION = "v2026.03.29.Final.v12"
+VERSION = "v2026.03.29.Final.v15"
 
+# 密钥与配置
 WEB_KEY = os.environ.get("WECHAT_WEBHOOK_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 WEBHOOK_URL = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEB_KEY}"
@@ -26,6 +28,12 @@ def send_wechat(content):
     except: pass
 
 def check_strategy(code):
+    """
+    量化策略：
+    1. 周量能粘合 <= 3%
+    2. 5周均量向上
+    3. 现价站稳 25周线
+    """
     try:
         time.sleep(random.uniform(0.1, 0.2))
         df = ak.stock_zh_a_hist(symbol=code, period="weekly", adjust="qfq")
@@ -34,7 +42,6 @@ def check_strategy(code):
         v_m5, v_m60 = df['成交量'].rolling(5).mean(), df['成交量'].rolling(60).mean()
         ma25 = df['收盘'].rolling(25).mean()
         
-        # 严格 3% 粘合逻辑
         cond = [
             abs(v_m5.iloc[-1] - v_m60.iloc[-1]) / v_m60.iloc[-1] <= 0.03, 
             v_m5.iloc[-1] > v_m5.iloc[-2],                                
@@ -44,25 +51,33 @@ def check_strategy(code):
     except: return False
 
 def main():
-    arg = sys.argv[1] if len(sys.argv) > 1 else "1"
+    if len(sys.argv) < 2: return
+    arg = sys.argv[1]
 
-    # --- [模式 A] 全天 AI 汇总逻辑 ---
+    # --- [模式 A: AI 汇总点评] ---
     if arg == "summary":
         all_hits = []
-        for f_name in ["hits_part1.json", "hits_part2.json"]:
-            if os.path.exists(f_name):
+        # 核心修复：兼容 GitHub Artifact 下载后的路径结构
+        check_files = [
+            "hits_part1.json",             # 本地或同级目录
+            "hits-p1/hits_part1.json",      # GitHub 下载解压后的目录
+            "hits_part2.json"              # Part 2 运行生成的目录
+        ]
+        
+        for f_path in check_files:
+            if os.path.exists(f_path):
                 try:
-                    with open(f_name, "r", encoding="utf-8") as f:
+                    with open(f_path, "r", encoding="utf-8") as f:
                         all_hits += json.load(f)
                 except: pass
         
         if not all_hits:
-            send_wechat(f"🏁 1200只全天扫描结束 ({VERSION})\n今日无 3% 粘合信号。")
+            send_wechat(f"🏁 扫描结束 ({VERSION})\n今日无符合 3% 粘合信号。")
             return
 
-        # AI 评分：取 Top 5
+        # 选出成交额前 5 名进行 AI 点评
         final_top = sorted(all_hits, key=lambda x: x['amount'], reverse=True)[:5]
-        ai_msg = f"\n📊 顶级量化分析师·五星必选 (Top {len(final_top)}):\n"
+        ai_msg = f"\n📊 AI量化分析师·五星打分汇总 (Top {len(final_top)}):\n"
         
         if GEMINI_KEY:
             try:
@@ -70,23 +85,23 @@ def main():
                 model = genai.GenerativeModel('gemini-1.5-flash')
                 for item in final_top:
                     try:
-                        prompt = (f"你现在是顶级量化分析师。点评A股{item['name']}({item['ind']})。请给出【星级(1-5星)】及25字内点评。"
+                        prompt = (f"你现在是顶级量化分析师。点评A股{item['name']}({item['ind']})，现价{item['price']}元。"
+                                  f"周线量能粘合。给出【星级(1-5星)】及25字内点评。"
                                   f"要求：必须给1-2个5星标杆，其余1-4星客观分布。")
                         response = model.generate_content(prompt)
-                        comment = response.text.strip() if response and hasattr(response, 'text') else "生成中..."
+                        comment = response.text.strip() if response and hasattr(response, 'text') else "评价生成中..."
                         ai_msg += f"⭐ {item['name']}: {comment}\n"
-                        time.sleep(1.5)
-                    except: ai_msg += f"⭐ {item['name']}: [AI点评暂时离线]\n"
-            except: ai_msg += "⚠️ AI 引擎初始化失败\n"
-        else:
-            ai_msg += "⚠️ 未配置 GEMINI_API_KEY\n"
+                        time.sleep(1) 
+                    except: ai_msg += f"⭐ {item['name']}: [AI调用异常]\n"
+            except: ai_msg += "⚠️ AI 引擎初始化失败，请检查 Key\n"
+        else: ai_msg += "⚠️ 未检测到 GEMINI_API_KEY\n"
 
         send_wechat(f"🏁 全天 1200 只深度汇总 ({VERSION})\n--------------------------\n{ai_msg}")
         return
 
-    # --- [模式 B] 阶段扫描逻辑 ---
+    # --- [模式 B: 分段扫描] ---
     part = int(arg)
-    send_wechat(f"🚀 个股扫描 Part {part} 启动\n(范围：成交额 {'前600' if part==1 else '后600'})")
+    send_wechat(f"🚀 个股扫描 Part {part} 启动...")
     
     try:
         df = ak.stock_zh_a_spot_em()
@@ -108,13 +123,10 @@ def main():
             current_hits.append({"name":row['name'], "code":row['code'], "ind":ind, "price":row['price'], "amount":row['amount']})
             hit_text += f"🔥 [{ind}]: {row['name']}({row['code']})\n"
 
-    # 保存文件供汇总使用
     with open(f"hits_part{part}.json", "w", encoding="utf-8") as f:
         json.dump(current_hits, f)
     
-    # 立即发送当前阶段结果
-    content = f"✅ Part {part} 扫描完成\n命中: {len(current_hits)} 只\n---\n{hit_text if hit_text else '今日无信号'}"
-    send_wechat(content)
+    send_wechat(f"✅ Part {part} 完成 (命中: {len(current_hits)})\n---\n{hit_text if hit_text else '今日无信号'}")
 
 if __name__ == "__main__":
     main()
