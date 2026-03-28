@@ -1,33 +1,44 @@
-name: Stock Selection Bot
+name: Two-Stage Stock Bot
 
 on:
   schedule:
-    # 对应北京时间 09:00, 12:00, 15:35
-    - cron: '0 1 * * 1-5'
+    # 中午场 (北京时间 11:35, 12:00)
+    - cron: '35 3 * * 1-5'
     - cron: '0 4 * * 1-5'
-    - cron: '35 7 * * 1-5'
-  workflow_dispatch:  # 允许在 GitHub 界面手动运行
+    # 下午场 (北京时间 15:30, 15:55)
+    - cron: '30 7 * * 1-5'
+    - cron: '55 7 * * 1-5'
+  workflow_dispatch: # 允许手动点按钮运行
 
 jobs:
-  run_bot:
+  part1:
+    # 如果是 11:35, 15:30 或 手动触发，则跑第 1 段
+    if: github.event.schedule == '35 3 * * 1-5' || github.event.schedule == '30 7 * * 1-5' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
-
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas requests akshare --upgrade --no-cache-dir
+        run: pip install pandas requests akshare lxml
+      - name: Run Part 1
+        run: python -u send_msg.py 1
 
-      - name: Run Stock Bot
-        # 直接运行脚本，不再需要引用 Secret
-        run: python -u send_msg.py
+  part2:
+    # 如果是 12:00 或 15:55 触发，则跑第 2 段
+    if: github.event.schedule == '0 4 * * 1-5' || github.event.schedule == '55 7 * * 1-5'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install pandas requests akshare lxml
+      - name: Run Part 2
+        run: python -u send_msg.py 2
