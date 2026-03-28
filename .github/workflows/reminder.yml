@@ -1,44 +1,48 @@
-name: Two-Stage Stock Bot
+name: Stock and ETF Multi-Bot
 
 on:
   schedule:
-    # 中午场 (北京时间 11:35, 12:00)
-    - cron: '35 3 * * 1-5'
-    - cron: '0 4 * * 1-5'
-    # 下午场 (北京时间 15:30, 15:55)
-    - cron: '30 7 * * 1-5'
-    - cron: '55 7 * * 1-5'
-  workflow_dispatch: # 允许手动点按钮运行
+    - cron: '35 3 * * 1-5'   # 11:35
+    - cron: '0 4 * * 1-5'    # 12:00
+    - cron: '30 7 * * 1-5'   # 15:30
+    - cron: '55 7 * * 1-5'   # 15:55
+  workflow_dispatch:
 
 jobs:
-  part1:
-    # 如果是 11:35, 15:30 或 手动触发，则跑第 1 段
+  # 个股任务
+  stock_job:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        part: [1, 2]
+    if: |
+      (matrix.part == 1 && (github.event.schedule == '35 3 * * 1-5' || github.event.schedule == '30 7 * * 1-5')) ||
+      (matrix.part == 2 && (github.event.schedule == '0 4 * * 1-5' || github.event.schedule == '55 7 * * 1-5')) ||
+      github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      - name: Install deps
+        run: pip install pandas requests akshare lxml
+      - name: Run Stock Bot
+        run: python -u send_msg.py ${{ matrix.part }}
+
+  # ETF 任务
+  etf_job:
     if: github.event.schedule == '35 3 * * 1-5' || github.event.schedule == '30 7 * * 1-5' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
-      - name: Install dependencies
+      - name: Install deps
         run: pip install pandas requests akshare lxml
-      - name: Run Part 1
-        run: python -u send_msg.py 1
-
-  part2:
-    # 如果是 12:00 或 15:55 触发，则跑第 2 段
-    if: github.event.schedule == '0 4 * * 1-5' || github.event.schedule == '55 7 * * 1-5'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
-      - name: Install dependencies
-        run: pip install pandas requests akshare lxml
-      - name: Run Part 2
-        run: python -u send_msg.py 2
+      - name: Run ETF Bot
+        run: python -u etf_bot.py
