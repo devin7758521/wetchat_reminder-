@@ -1,6 +1,7 @@
 import pandas as pd
 import requests
 import akshare as ak
+import google.generativeai as genai
 import warnings
 import time
 import random
@@ -11,8 +12,16 @@ from collections import defaultdict
 
 warnings.filterwarnings("ignore")
 
+# 从 Secrets 读取
 WEB_KEY = os.environ.get("WECHAT_WEBHOOK_KEY")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY") 
 WEBHOOK_URL = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEB_KEY}"
+
+if GEMINI_KEY:
+    try:
+        genai.configure(api_key=GEMINI_KEY)
+        ai_model = genai.GenerativeModel('gemini-1.5-flash')
+    except: ai_model = None
 
 def beijing_time():
     return (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
@@ -20,9 +29,18 @@ def beijing_time():
 def send_wechat(content):
     if not WEB_KEY: return
     try:
+        # 👈 这里改回了你最开始使用的 text 格式，确保不报错
         data = {"msgtype": "text", "text": {"content": content}}
         requests.post(WEBHOOK_URL, json=data, timeout=15)
     except: pass
+
+def get_ai_analysis(name, industry, price):
+    if not GEMINI_KEY or not ai_model: return "（AI 未就绪）"
+    prompt = f"分析A股{name}({industry}),现价{price}元。该股周线量能粘合后突破,请结合行业给一个星级推荐和30字理由。格式:【X星】理由"
+    try:
+        response = ai_model.generate_content(prompt)
+        return response.text.strip()
+    except: return "AI 分析中..."
 
 def get_split_stocks(part=1):
     try:
@@ -56,19 +74,28 @@ def check_strategy(code):
 
 def main():
     part = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-    send_wechat(f"🚀 [个股] 第 {part}/2 场启动\n时间: {beijing_time()}")
+    send_wechat(f"🚀 [个股扫描] 第 {part}/2 场\n时间: {beijing_time()}")
+    
     stocks = get_split_stocks(part=part)
-    hit_map = defaultdict(list)
+    qualified_list = []
     for _, row in stocks.iterrows():
         if check_strategy(row["code"]):
             ind = get_stock_analysis(row["code"])
-            hit_map[ind].append(f"{row['name']}({row['code']})")
+            qualified_list.append({"name": row['name'], "code": row['code'], "ind": ind, "price": row['price'], "amount": row['amount']})
     
+    final_targets = sorted(qualified_list, key=lambda x: x['amount'], reverse=True)[:10]
+    if not final_targets:
+        send_wechat(f"✅ 第 {part} 部分扫描完毕，暂无信号。")
+        return
+
+    # 拼接纯文本报告
     content = ""
-    for ind, names in hit_map.items():
-        tag = "🔥" if len(names) > 1 else "📌"
-        content += f"{tag} {ind}: {', '.join(names)}\n"
-    send_wechat(f"✅ 第 {part} 部分完毕\n---\n{content if content else '无信号'}")
+    for item in final_targets:
+        remark = get_ai_analysis(item['name'], item['ind'], item['price'])
+        content += f"\n⭐ {item['name']}({item['code']}) | {item['ind']}\n价格: {item['price']}\nAI: {remark}\n"
+        time.sleep(2)
+        
+    send_wechat(f"✅ 第 {part} 部分精选报告\n{content}")
 
 if __name__ == "__main__":
     main()
