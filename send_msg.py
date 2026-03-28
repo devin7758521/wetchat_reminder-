@@ -6,6 +6,7 @@ import time
 import random
 import sys
 from datetime import datetime, timedelta
+from collections import defaultdict
 
 # 屏蔽告警
 warnings.filterwarnings("ignore")
@@ -18,18 +19,16 @@ def beijing_time():
     return (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
 
 def send_wechat(content):
-    """【修复点】改回你最初的 text 格式，确保 100% 兼容"""
     try:
-        # 这里改回了 msgtype: text
         data = {"msgtype": "text", "text": {"content": content}}
         requests.post(WEBHOOK_URL, json=data, timeout=15)
     except:
         pass
 
-# ===================== 核心：分段获取名单 (1-600 / 601-1200) =====================
+# ===================== 分段获取名单 =====================
 def get_split_stocks(part=1):
     try:
-        print(f"📡 正在准备扫描第 {part}/2 部分活跃股...")
+        print(f"📡 正在获取第 {part}/2 部分名单...")
         df = ak.stock_zh_a_spot_em()
         if df is None or df.empty: return pd.DataFrame()
 
@@ -43,34 +42,21 @@ def get_split_stocks(part=1):
         mask &= (df['price'] > 3) & (df['price'] < 70)
         
         all_active = df[mask].sort_values(by='amount', ascending=False).head(1200)
-        
-        if part == 1:
-            return all_active.head(600)
-        else:
-            return all_active.tail(600)
+        return all_active.head(600) if part == 1 else all_active.tail(600)
     except Exception as e:
-        print(f"❌ 列表获取异常: {e}")
+        print(f"❌ 列表异常: {e}")
         return pd.DataFrame()
 
 def get_stock_analysis(code):
-    """获取分析数据：所属行业 + 近5日表现"""
+    """获取行业名称"""
     try:
         time.sleep(0.5)
         info = ak.stock_individual_info_em(symbol=code)
-        industry = info[info['item'] == '板块'].iloc[0]['value']
-        
-        hist = ak.stock_zh_a_hist(symbol=code, period="daily", 
-                                  start_date=(datetime.now()-timedelta(days=12)).strftime("%Y%m%d"), 
-                                  adjust="qfq")
-        if len(hist) >= 5:
-            five_day_pct = round(((hist['收盘'].iloc[-1] / hist['收盘'].iloc[-5]) - 1) * 100, 2)
-            trend = "+" if five_day_pct > 0 else ""
-            return f"\n行业: {industry}\n5日涨跌: {trend}{five_day_pct}%"
-        return f"\n行业: {industry}"
+        return info[info['item'] == '板块'].iloc[0]['value']
     except:
-        return ""
+        return "未知行业"
 
-# ===================== 选股逻辑 (完全保留你的核心条件) =====================
+# ===================== 选股逻辑 (完全保留您的核心逻辑) =====================
 def check_strategy(code):
     try:
         time.sleep(random.uniform(0.4, 0.7))
@@ -101,39 +87,41 @@ def check_strategy(code):
 # ===================== 主流程 =====================
 def main():
     part = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-    
     start_ts = time.time()
-    # 推送内容也改回了纯文本排版
-    send_wechat(f"🚀 [AI选股] 第 {part}/2 场启动\n时间: {beijing_time()}\n范围: 活跃榜 {(part-1)*600+1}-{part*600}名")
+    
+    send_wechat(f"🚀 [板块共振版] 第 {part}/2 场启动\n时间: {beijing_time()}\n范围: 活跃榜 {(part-1)*600+1}-{part*600}名")
     
     stocks = get_split_stocks(part=part)
     if stocks.empty: return
 
     total = len(stocks)
-    hit_list = []
+    # 使用字典按行业归档结果
+    industry_map = defaultdict(list)
     
     for i, (_, row) in enumerate(stocks.iterrows()):
         code, name = row["code"], row["name"]
         if check_strategy(code):
-            analysis = get_stock_analysis(code)
-            hit_list.append(f"📌 {name} ({code}){analysis}")
-            print(f"🎯 命中: {code} {name}")
+            ind = get_stock_analysis(code) # 依然会抓行业
+            industry_map[ind].append(f"{name}({code})")
+            print(f"🎯 命中: {code} {name} [{ind}]")
         
         if (i + 1) % 10 == 0: print(f"进度: {i+1}/{total}...")
-        if (i + 1) % 50 == 0: time.sleep(5)
+        if (i + 1) % 50 == 0: time.sleep(5) 
+
+    # 整理结果文本
+    hit_content = ""
+    for ind, names in industry_map.items():
+        # 核心逻辑：超过 2 只命中的行业打上 🔥 标记
+        prefix = "🔥 [板块共振] " if len(names) >= 2 else "📌 "
+        hit_content += f"{prefix}{ind}：{', '.join(names)}\n"
 
     duration = int(time.time() - start_ts)
-    
     header = f"✅ 第 {part} 部分扫描完毕\n------------------\n"
-    if hit_list:
-        content = "\n\n".join(hit_list)
-    else:
-        content = "今日此区间无信号"
-    
     footer = f"\n------------------\n耗时: {duration}s\n时间: {beijing_time()}"
     
-    send_wechat(header + content + footer)
-    print("🏁 执行完毕。")
+    final_msg = header + (hit_content if hit_content else "此区间暂无信号") + footer
+    send_wechat(final_msg)
+    print("🏁 全部流程执行完毕。")
 
 if __name__ == "__main__":
     main()
