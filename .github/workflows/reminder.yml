@@ -1,12 +1,12 @@
-name: Stock and ETF Multi-Bot v2026.03.29.v5
+name: Stock and ETF Multi-Bot v12
 
 on:
   schedule:
-    - cron: '35 3 * * 1-5'   # 11:35 (个股 Part 1)
-    - cron: '0 4 * * 1-5'    # 12:00 (个股 Part 2 -> 汇总)
-    - cron: '30 6 * * 1-5'   # 14:30 (ETF 专项)
-    - cron: '30 7 * * 1-5'   # 15:30 (个股 Part 1)
-    - cron: '55 7 * * 1-5'   # 15:55 (个股 Part 2 -> 汇总)
+    - cron: '35 3 * * 1-5'   # 11:35
+    - cron: '0 4 * * 1-5'    # 12:00
+    - cron: '30 6 * * 1-5'   # 14:30
+    - cron: '30 7 * * 1-5'   # 15:30
+    - cron: '55 7 * * 1-5'   # 15:55
   workflow_dispatch:
 
 jobs:
@@ -19,15 +19,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
       - name: Install deps
-        run: pip install pandas requests akshare lxml google-generativeai tqdm
-      - name: Run Stock Bot Part 1
+        run: pip install pandas requests akshare lxml google-generativeai
+      - name: Run Part 1
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python -u send_msg.py 1
-      - name: Upload P1 Result
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: hits-p1
@@ -36,32 +34,31 @@ jobs:
 
   stock_part2:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 4 * * 1-5' || github.event.schedule == '55 7 * * 1-5'
+    needs: [stock_part1]
+    if: always() && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 4 * * 1-5' || github.event.schedule == '55 7 * * 1-5')
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
       - name: Install deps
-        run: pip install pandas requests akshare lxml google-generativeai tqdm
-      - name: Run Stock Bot Part 2
+        run: pip install pandas requests akshare lxml google-generativeai
+      - name: Run Part 2
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python -u send_msg.py 2
-      - name: Download P1 Result
+      - name: Download P1
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: hits-p1
-      - name: Run Global Summary
+      - name: Run AI Summary
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          [ -d "hits-p1" ] && mv hits-p1/hits_part1.json . || echo "P1 file not found"
+          [ -d "hits-p1" ] && mv hits-p1/hits_part1.json . || echo "P1 not found"
           python -u send_msg.py summary
 
   etf_job:
@@ -69,14 +66,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 6 * * 1-5'
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
-      - name: Install deps
-        run: pip install pandas requests akshare lxml
       - name: Run ETF Bot
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
-        run: python -u etf_bot.py
+        run: |
+          pip install pandas requests akshare lxml
+          python -u etf_bot.py
