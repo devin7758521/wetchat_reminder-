@@ -7,30 +7,28 @@ import time
 import random
 import sys
 import os
-from datetime import datetime, timedelta
+import json
+from datetime import datetime
 from collections import defaultdict
-from tqdm import tqdm  # 注入进度条灵魂
+from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
 
-# --- 版本号 ---
-VERSION = "v2026.03.29.02"
+# --- 核心版本号 ---
+VERSION = "v2026.03.29.Final.v4"
 
-# 密钥读取
+# 密钥配置
 WEB_KEY = os.environ.get("WECHAT_WEBHOOK_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 WEBHOOK_URL = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEB_KEY}"
 
-# AI 准备
+# AI 初始化
 ai_model = None
 if GEMINI_KEY:
     try:
         genai.configure(api_key=GEMINI_KEY)
         ai_model = genai.GenerativeModel('gemini-1.5-flash')
     except: pass
-
-def beijing_time():
-    return (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
 
 def send_wechat(content):
     if not WEB_KEY: return
@@ -40,90 +38,108 @@ def send_wechat(content):
     except: pass
 
 def check_strategy(code):
-    """3% 极致粘合策略逻辑"""
+    """
+    量化策略核心 (周线级别 Period='weekly')：
+    1. 周线量能粘合 <= 3%
+    2. 均量向上 + 站稳25周线
+    3. 周线 MACD DIF >= DEA (红柱区间)
+    """
     try:
-        # 这里保留微小延迟，防止被 API 封锁
-        time.sleep(random.uniform(0.15, 0.3))
+        time.sleep(random.uniform(0.1, 0.2))
         df = ak.stock_zh_a_hist(symbol=code, period="weekly", adjust="qfq")
         if len(df) < 65: return False
-        v_m5 = df['成交量'].rolling(5).mean()
-        v_m60 = df['成交量'].rolling(60).mean()
+        
+        v_m5, v_m60 = df['成交量'].rolling(5).mean(), df['成交量'].rolling(60).mean()
         ma25 = df['收盘'].rolling(25).mean()
         
-        cond_bind = abs(v_m5.iloc[-1] - v_m60.iloc[-1]) / v_m60.iloc[-1] <= 0.03
-        cond_up = v_m5.iloc[-1] > v_m5.iloc[-2]
-        cond_price = df['收盘'].iloc[-1] > ma25.iloc[-1]
-        return cond_bind and cond_up and cond_price
+        ema12 = df['收盘'].ewm(span=12, adjust=False).mean()
+        ema26 = df['收盘'].ewm(span=26, adjust=False).mean()
+        dif = ema12 - ema26
+        dea = dif.ewm(span=9, adjust=False).mean()
+        
+        cond = [
+            abs(v_m5.iloc[-1] - v_m60.iloc[-1]) / v_m60.iloc[-1] <= 0.03, 
+            v_m5.iloc[-1] > v_m5.iloc[-2],                                
+            df['收盘'].iloc[-1] > ma25.iloc[-1],                          
+            dif.iloc[-1] >= dea.iloc[-1]
+        ]
+        return all(cond)
     except: return False
 
 def main():
-    part = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-    send_wechat(f"🚀 [个股扫描] Part {part}/2 {VERSION}\n启动: {beijing_time()}")
-    
-    # 获取数据池
-    try:
-        df = ak.stock_zh_a_spot_em()
-        df.rename(columns={'代码': 'code', '名称': 'name', '最新价': 'price', '成交额': 'amount'}, inplace=True)
-        df['code'] = df['code'].astype(str).str.zfill(6)
-        mask = (df['code'].str.startswith(('60', '00'))) & (~df['name'].str.contains("ST|\\*ST"))
-        df_sorted = df[mask].sort_values(by='amount', ascending=False).head(1200)
-        stocks = df_sorted.head(600) if part == 1 else df_sorted.tail(600)
-    except Exception as e:
-        send_wechat(f"❌ 基础数据异常: {str(e)}")
+    # 接收参数：1(前600), 2(后600), summary(汇总)
+    arg = sys.argv[1] if len(sys.argv) > 1 else "1"
+
+    # --- [模式 A] 汇总模式 (由 12:00 和 15:55 的 Part 2 触发) ---
+    if arg == "summary":
+        all_hits = []
+        # 读取 Part 1 和 Part 2 的结果
+        for f_name in ["hits_part1.json", "hits_part2.json"]:
+            if os.path.exists(f_name):
+                try:
+                    with open(f_name, "r", encoding="utf-8") as f:
+                        all_hits += json.load(f)
+                except: pass
+        
+        if not all_hits:
+            send_wechat(f"🏁 1200只周线全扫描 ({VERSION})\n今日未发现信号。")
+            return
+
+        # 汇总分类
+        hit_map = defaultdict(list)
+        for h in all_hits:
+            hit_map[h['ind']].append(f"{h['name']}({h['code']})")
+        
+        summary_text = ""
+        for ind, names in hit_map.items():
+            summary_text += f"🔥 [{ind}]: {', '.join(names)}\n"
+
+        # AI 评分：Top 5
+        final_top = sorted(all_hits, key=lambda x: x['amount'], reverse=True)[:5]
+        ai_msg = "\n📊 顶级量化分析师评分 (Top 5):\n"
+        
+        for item in final_top:
+            if ai_model:
+                try:
+                    # 你的硬性要求：顶级身份 + 5星必选1-2个 + 严谨分布
+                    prompt = (f"你现在是顶级量化分析师。请点评A股{item['name']}({item['ind']})，现价{item['price']}元。"
+                              f"该股已通过【周线级】量能粘合及MACD红柱过滤。请给出【星级(1-5星)】及25字内专业点评。"
+                              f"要求：1. 评价要专业严谨；2. 5星代表全场最完美，【必须】给1-2个5星（绝不能没有）；"
+                              f"3. 其余个股根据强度在1-4星间客观打分。")
+                    response = ai_model.generate_content(prompt)
+                    ai_msg += f"⭐ {item['name']}: {response.text.strip()}\n"
+                    time.sleep(2.5) 
+                except: pass
+
+        send_wechat(f"🏁 1200只全扫描汇总 ({VERSION})\n---\n{summary_text}{ai_msg}")
         return
 
-    hit_map = defaultdict(list)
-    ai_targets = []
-
-    # --- 核心循环：tqdm 实现网页进度条 ---
-    # desc 会显示在 GitHub 日志里
-    progress_bar = tqdm(stocks.iterrows(), total=len(stocks), desc=f"Scanning P{part}")
+    # --- [模式 B] 扫描模式 (Part 1 或 Part 2) ---
+    part = int(arg)
+    print(f"🚀 Part {part} 启动扫描...")
     
-    for i, (_, row) in enumerate(progress_bar):
-        curr_idx = i + 1
-        
-        # 1. 网页日志进度更新
-        progress_bar.set_postfix({"Stock": row['name'], "Hits": len(ai_targets)})
-        
-        # 2. 微信每 50 只同步一次进度
-        if curr_idx % 50 == 0:
-            send_wechat(f"📊 进度: {curr_idx + (part-1)*600}/1200...")
+    try:
+        df = ak.stock_zh_a_spot_em()
+        df.rename(columns={'代码':'code','名称':'name','最新价':'price','成交额':'amount'}, inplace=True)
+        df['code'] = df['code'].astype(str).str.zfill(6)
+        mask = (df['code'].str.startswith(('60','00'))) & (~df['name'].str.contains("ST|\\*ST"))
+        all_stocks = df[mask].sort_values(by='amount', ascending=False).head(1200)
+        stocks = all_stocks.head(600) if part == 1 else all_stocks.tail(600)
+    except: return
 
-        # 3. 执行筛选
+    current_hits = []
+    for _, row in stocks.iterrows():
         if check_strategy(row["code"]):
             try:
                 info = ak.stock_individual_info_em(symbol=row["code"])
                 ind = info[info['item'] == '板块'].iloc[0]['value']
-            except: ind = "未知行业"
-            
-            # 命中立即发微信，不让你久等
-            send_wechat(f"🎯 命中 [{ind}]: {row['name']}({row['code']})")
-            
-            hit_map[ind].append(f"{row['name']}({row['code']})")
-            ai_targets.append({"name": row['name'], "ind": ind, "price": row['price'], "amount": row['amount']})
+            except: ind = "相关赛道"
+            current_hits.append({"name":row['name'], "code":row['code'], "ind":ind, "price":row['price'], "amount":row['amount']})
 
-    # --- 最终结果输出 ---
-    summary = ""
-    for ind, names in hit_map.items():
-        summary += f"🔥 [{ind}]: {', '.join(names)}\n"
-
-    if not summary:
-        send_wechat(f"✅ Part {part} 扫完 ({VERSION})\n今日无信号")
-        return
-
-    # 4. AI 评价逻辑
-    ai_msg = "\n🤖 AI 研报点评:\n"
-    top_5 = sorted(ai_targets, key=lambda x: x['amount'], reverse=True)[:5]
-    for item in top_5:
-        if ai_model:
-            try:
-                prompt = f"分析A股{item['name']}({item['ind']})。现价{item['price']}元。周线量能粘合后突破。给星级和30字理由。"
-                res = ai_model.generate_content(prompt).text.strip()
-                ai_msg += f"⭐ {item['name']}: {res}\n"
-                time.sleep(1.5)
-            except: pass
-
-    send_wechat(f"✅ Part {part} 任务达成！\n---\n{summary}{ai_msg}")
+    # 保存文件供 Summary 模式调用
+    with open(f"hits_part{part}.json", "w", encoding="utf-8") as f:
+        json.dump(current_hits, f)
+    print(f"✅ Part {part} 完成，结果已保存。")
 
 if __name__ == "__main__":
     main()
