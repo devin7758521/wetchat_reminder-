@@ -1,16 +1,15 @@
-name: Stock and ETF Multi-Bot
+name: Stock and ETF Multi-Bot v2026.03.29.v5
 
 on:
   schedule:
     - cron: '35 3 * * 1-5'   # 11:35 (个股 Part 1)
-    - cron: '0 4 * * 1-5'    # 12:00 (个股 Part 2 -> 中午汇总)
+    - cron: '0 4 * * 1-5'    # 12:00 (个股 Part 2 -> 汇总)
     - cron: '30 6 * * 1-5'   # 14:30 (ETF 专项)
     - cron: '30 7 * * 1-5'   # 15:30 (个股 Part 1)
-    - cron: '55 7 * * 1-5'   # 15:55 (个股 Part 2 -> 收盘汇总)
+    - cron: '55 7 * * 1-5'   # 15:55 (个股 Part 2 -> 汇总)
   workflow_dispatch:
 
 jobs:
-  # 个股第一部分：扫描并寄存结果
   stock_part1:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '35 3 * * 1-5' || github.event.schedule == '30 7 * * 1-5'
@@ -35,10 +34,8 @@ jobs:
           path: hits_part1.json
           retention-days: 1
 
-  # 个股第二部分：扫描 -> 下载 P1 -> 触发汇总
   stock_part2:
     runs-on: ubuntu-latest
-    needs: [] # 保持独立，不强制等待，由 cron 触发
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 4 * * 1-5' || github.event.schedule == '55 7 * * 1-5'
     steps:
       - uses: actions/checkout@v4
@@ -54,27 +51,19 @@ jobs:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python -u send_msg.py 2
-      
-      # 【核心改动】尝试下载 P1 结果（如果 P1 已经跑完并上传了）
       - name: Download P1 Result
         uses: actions/download-artifact@v4
-        continue-on-error: true # 防止万一 P1 失败导致整个任务崩溃
+        continue-on-error: true
         with:
           name: hits-p1
-          
       - name: Run Global Summary
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          # 检查文件夹是否存在并移动文件
-          if [ -d "hits-p1" ]; then
-            mv hits-p1/hits_part1.json .
-          fi
-          # 执行汇总模式 (包含顶级分析师点评和5星必选)
+          [ -d "hits-p1" ] && mv hits-p1/hits_part1.json . || echo "P1 file not found"
           python -u send_msg.py summary
 
-  # ETF 任务：完全独立
   etf_job:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 6 * * 1-5'
