@@ -1,5 +1,4 @@
-pandas
+google-genai
 requests
+pandas
 akshare
-google-generativeai
-tqdm
