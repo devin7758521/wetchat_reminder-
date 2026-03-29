@@ -1,9 +1,9 @@
 import os
 import sys
 import requests
-from google import genai
+import json
 
-# 配置环境变量
+# 配置
 WEB_KEY = os.environ.get("WECHAT_WEBHOOK_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
@@ -11,7 +11,7 @@ def send_wechat(text):
     if not WEB_KEY: return
     url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEB_KEY}"
     try:
-        requests.post(url, json={"msgtype": "text", "text": {"content": text}}, timeout=15)
+        requests.post(url, json={"msgtype": "text", "text": {"content": text}}, timeout=10)
     except: pass
 
 def main():
@@ -20,26 +20,33 @@ def main():
 
     if mode == "summary":
         if not GEMINI_KEY:
-            send_wechat("❌ 错误：GitHub Secrets 中未配置 GEMINI_API_KEY")
+            send_wechat("❌ 错误：未配置 GEMINI_API_KEY")
             return
 
-        # 核心修正：使用新版 SDK 初始化客户端
-        client = genai.Client(api_key=GEMINI_KEY)
+        # 核心修正：使用原生 HTTP POST 请求，手动指定 v1 版本 (避开 v1beta)
+        api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
         
+        headers = {'Content-Type': 'application/json'}
+        payload = {
+            "contents": [{
+                "parts": [{"text": "你好！请用15字点评今日A股行情。"}]
+            }]
+        }
+
         try:
-            # 修正 404 问题：直接写模型 ID，不要带 'models/' 前缀
-            response = client.models.generate_content(
-                model='gemini-1.5-flash', 
-                contents="你好！请用20字点评一下今日A股市场的表现。"
-            )
-            
-            if response and response.text:
-                send_wechat(f"🚀 AI 连通成功！\n\n点评内容：\n{response.text.strip()}")
+            response = requests.post(api_url, headers=headers, json=payload, timeout=20)
+            res_data = response.json()
+
+            # 解析原生返回结果
+            if "candidates" in res_data:
+                ai_text = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                send_wechat(f"🚀 AI 原生连通成功！\n\n点评：{ai_text.strip()}")
             else:
-                send_wechat("⚠️ AI 响应内容为空，请检查 API 额度。")
+                # 如果还是报错，把完整的 API 错误发回微信
+                send_wechat(f"❌ API 响应异常：\n{json.dumps(res_data)}")
                 
         except Exception as e:
-            send_wechat(f"❌ AI 调用失败\n详情：{str(e)[:150]}")
+            send_wechat(f"❌ 请求发生异常：{str(e)[:100]}")
 
 if __name__ == "__main__":
     main()
