@@ -1,4 +1,4 @@
-name: Stock Multi-Bot v16
+name: Stock & ETF Multi-Bot v16
 
 on:
   schedule:
@@ -10,21 +10,39 @@ jobs:
   stock_job:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
+      - uses: actions/checkout@v4
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
-        run: |
-          pip install google-genai requests pandas akshare lxml
+        run: pip install -r requirements.txt
+      
+      - name: Run Stock Scan Part 1
+        env:
+          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
+        run: python send_msg.py 1
+
+      - name: Run Stock Scan Part 2
+        env:
+          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
+        run: python send_msg.py 2
 
       - name: Run AI Summary
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python send_msg.py summary
+
+  etf_job:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.schedule, '30 7')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ETF Bot
+        env:
+          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          python send_msg.py summary
+          pip install -r requirements.txt
+          python etf_bot.py
