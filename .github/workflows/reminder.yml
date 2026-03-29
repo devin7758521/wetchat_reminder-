@@ -1,30 +1,8 @@
-name: Stock Multi-Bot v16
-
-on:
-  schedule:
-    - cron: '35 3 * * 1-5'
-    - cron: '30 7 * * 1-5'
-  workflow_dispatch:
-
-jobs:
-  stock_job:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install google-genai requests pandas akshare lxml
-
-      - name: Run AI Summary
+- name: Run AI Summary
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
+          # 确保安装的是支持新 SDK 的版本
+          pip install google-genai requests
           python send_msg.py summary
