@@ -1,105 +1,43 @@
 import pandas as pd
 import requests
 import akshare as ak
-import warnings
-import time
 import os
-import logging
-from datetime import datetime, timedelta
+import json
 
-warnings.filterwarnings("ignore")
-
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-VERSION = "v2026.03.28.Hotfix.v2"
-
+VERSION = "v2026.03.29.ETF.G2.5"
 WEB_KEY = os.environ.get("WECHAT_WEBHOOK_KEY")
-WEBHOOK_URL = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEB_KEY}"
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
 def send_wechat(content):
-    """发送微信企业号消息"""
-    if not WEB_KEY or not content:
-        return False
-    try:
-        data = {"msgtype": "text", "text": {"content": content}}
-        response = requests.post(WEBHOOK_URL, json=data, timeout=15)
-        response.raise_for_status()
-        logger.info("✅ WeChat 消息已发送")
-        return True
-    except requests.exceptions.Timeout:
-        logger.error("❌ WeChat 发送超时 (15s)")
-        return False
-    except Exception as e:
-        logger.error(f"❌ WeChat 发送异常: {type(e).__name__}: {e}")
-        return False
-
-def get_etf_list():
-    """获取 ETF 列表，筛选成交额大于 1000 万"""
-    try:
-        df = ak.fund_etf_spot_em()
-        df = df[df['成交额'] > 10000000]
-        # 简单去重逻辑
-        df['simple_name'] = df['名称'].str.extract(r'(.+?)(?:ETF|基金)')
-        result = df.sort_values(by='成交额', ascending=False).drop_duplicates(subset=['simple_name'])
-        logger.info(f"✅ 获取 ETF 列表: {len(result)} 只")
-        return result
-    except Exception as e:
-        logger.error(f"❌ 获取 ETF 列表失败: {e}")
-        return pd.DataFrame()
-
-def check_etf_strategy(code):
-    """
-    ETF 量化策略：
-    1. 周量能粘合 <= 3%
-    2. 现价站稳 25 周线
-    """
-    try:
-        time.sleep(0.5)
-        df = ak.fund_etf_hist_em(symbol=code, period="weekly", adjust="qfq")
-        if len(df) < 65:
-            return False
-        
-        v_m5 = df['成交量'].rolling(5).mean()
-        v_m60 = df['成交量'].rolling(60).mean()
-        ma25 = df['收盘'].rolling(25).mean()
-        
-        # 防止除零
-        if v_m60.iloc[-1] == 0:
-            return False
-        
-        return (abs(v_m5.iloc[-1] - v_m60.iloc[-1]) / v_m60.iloc[-1] <= 0.03) and (df['收盘'].iloc[-1] > ma25.iloc[-1])
-    except Exception as e:
-        logger.debug(f"⚠️ ETF 策略检查失败 ({code}): {type(e).__name__}")
-        return False
+    if not WEB_KEY: return
+    requests.post(f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEB_KEY}", json={"msgtype": "text", "text": {"content": content}})
 
 def main():
-    """主函数"""
-    logger.info(f"🚀 ETF 扫描启动 ({VERSION})")
-    send_wechat(f"📊 [ETF 专项] 14:30 扫描启动 ({VERSION})")
-    
+    print("=== 开始 ETF 专项扫描 ===")
     try:
-        etfs = get_etf_list()
-        if etfs.empty:
-            logger.warning("⚠️ 未获取到 ETF 列表")
-            send_wechat("⚠️ ETF 列表获取异常，请检查日志")
-            return
-        
+        df = ak.fund_etf_spot_em()
         hits = []
-        for _, row in etfs.iterrows():
-            if check_etf_strategy(row['代码']):
-                hits.append(f"💎 {row['名称']}({row['代码']})")
-                logger.info(f"✅ 命中 ETF: {row['名称']}({row['代码']})")
-        
-        hit_count = len(hits)
-        hit_msg = "\n".join(hits) if hits else "无信号"
-        result_msg = f"✅ ETF 扫描完毕 ({VERSION})\n---\n{hit_msg}\n\n📊 共命中: {hit_count} 只"
-        send_wechat(result_msg)
-        logger.info(f"✅ ETF 扫描完毕，共命中 {hit_count} 只")
-    except Exception as e:
-        logger.error(f"❌ ETF 扫描异常: {e}")
-        send_wechat(f"❌ ETF 扫描异常: {e}，请检查日志")
+        # 扫描成交额前 60 的主流 ETF
+        for _, row in df.sort_values(by='成交额', ascending=False).head(60).iterrows():
+            try:
+                print(f"检查 ETF: {row['名称']}...", end="\r")
+                hist = ak.fund_etf_hist_em(symbol=row['代码'], period="weekly", adjust="qfq")
+                v5 = hist['成交量'].rolling(5).mean().iloc[-1]
+                v60 = hist['成交量'].rolling(60).mean().iloc[-1]
+                if abs(v5-v60)/v60 <= 0.03 and hist['收盘'].iloc[-1] > hist['收盘'].rolling(25).mean().iloc[-1]:
+                    print(f"\n🎯 【ETF命中】{row['名称']}")
+                    hits.append(row['名称'])
+            except: continue
 
-if __name__ == "__main__":
-    main()
+        if hits:
+            api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+            prompt = f"作为分析师，简短点评以下有量能粘合信号的ETF：{','.join(hits[:5])}。"
+            res = requests.post(api_url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
+            ai_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+            send_wechat(f"💎 ETF 专项报告 ({VERSION})\n{ai_text}\n\n信号标的: {','.join(hits)}")
+        else:
+            send_wechat("ETF 今日无粘合信号。")
+    except Exception as e:
+        print(f"ETF 任务异常: {e}")
+
+if __name__ == "__main__": main()
