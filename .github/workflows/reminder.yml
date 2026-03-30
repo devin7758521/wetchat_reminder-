@@ -3,7 +3,7 @@ name: Stock & ETF Multi-Bot v16
 on:
   schedule:
     # 北京时间 14:00 (UTC 06:00) → 【唯一触发时间】
-    - cron: '0 6 * * 1-5'
+    - cron: '55 15 * * 1-5'
   workflow_dispatch:
 
 jobs:
