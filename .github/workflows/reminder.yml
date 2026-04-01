@@ -5,10 +5,13 @@ on:
     # 北京时间 14:00 (UTC 06:00) → 已修正为整点触发
     - cron: '0 6 * * 1-5'
   workflow_dispatch:
+  repository_dispatch:
+    types: [scriptable_trigger]
 
 jobs:
   stock_job:
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'repository_dispatch'
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -40,8 +43,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    # 修改说明：移除了原本会导致自动运行失效的时间判断，现在只要触发工作流（无论是定时还是手动），它都会运行
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    # 修改说明：增加了对 repository_dispatch 的支持
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'repository_dispatch'
     steps:
       - uses: actions/checkout@v5
       - name: Setup Python
