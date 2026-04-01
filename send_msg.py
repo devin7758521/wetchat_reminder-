@@ -45,8 +45,14 @@ def check_strategy(code, name):
         ma25 = df['收盘'].rolling(25).mean()
         
         vol_up = v5.iloc[-1] > v5.iloc[-2]
-        deviation = abs(v5.iloc[-1] - v60.iloc[-1]) / v60.iloc[-1]
-        is_binding = deviation <= 0.03
+        
+        # --- 修改处开始：偏离度计算逻辑 ---
+        # 计算 (V5 - V60) / V60 的百分比
+        deviation = (v5.iloc[-1] - v60.iloc[-1]) / v60.iloc[-1]
+        # 筛选范围：-3% 到 +7% 之间
+        is_binding = -0.03 <= deviation <= 0.07
+        # --- 修改处结束 ---
+
         price_support = curr_price > ma25.iloc[-1]
 
         if vol_up and is_binding and price_support:
