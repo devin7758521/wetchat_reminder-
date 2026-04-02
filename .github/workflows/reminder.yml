@@ -1,60 +1,41 @@
-name: Stock & ETF Multi-Bot v16
+name: Stock Reminder
 
 on:
-  schedule:
-    # 北京时间 14:00 (UTC 06:00) → 已修正为整点触发
-    - cron: '0 6 * * 1-5'
   workflow_dispatch:
-  repository_dispatch:
-    types: [scriptable_trigger]
+  schedule:
+    - cron: '30 1 * * 1-5'   # 北京时间 09:30 (早盘)
+    - cron: '45 6 * * 1-5'   # 北京时间 14:45 (尾盘)
 
 jobs:
-  stock_job:
+  build:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'repository_dispatch'
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@v5
-      - name: Setup Python
-        uses: actions/setup-python@v6
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+          python-version: '3.10'
 
-      - name: Run Stock Scan Part 1
+      - name: Install Dependencies
+        run: |
+          pip install pandas requests akshare
+
+      - name: Part 1 Scan
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
-        run: python send_msg.py 1
+        run: |
+          # 增加重试逻辑，防止瞬时网络抖动
+          python send_msg.py 1 || (sleep 15 && python send_msg.py 1)
 
-      - name: Run Stock Scan Part 2
-        env:
-          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
-        run: python send_msg.py 2
+      - name: Part 2 Scan
+        run: |
+          python send_msg.py 2 || (sleep 15 && python send_msg.py 2)
 
-      - name: Run AI Summary
+      - name: AI Summary
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python send_msg.py summary
-
-  etf_job:
-    runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    # 修改说明：增加了对 repository_dispatch 的支持
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'repository_dispatch'
-    steps:
-      - uses: actions/checkout@v5
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run ETF Bot
-        env:
-          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python etf_bot.py
+        run: |
+          python send_msg.py summary || (sleep 15 && python send_msg.py summary)
