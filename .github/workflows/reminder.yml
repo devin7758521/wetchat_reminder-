@@ -1,57 +1,104 @@
-name: Stock & ETF Multi-Bot v16
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Stock & ETF Multi-Bot Controller
+Based on the GitHub Actions workflow configuration
+"""
 
-on:
-  schedule:
-    # 北京时间 14:00 (UTC 06:00) → 【唯一触发时间】
-    - cron: '55 13 * * 1-5'
-    - cron: '55 5 * * 1-5'
-  workflow_dispatch:
+import os
+import sys
+import subprocess
+import time
+import argparse
+from datetime import datetime
 
-jobs:
-  stock_job:
-    runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    steps:
-      - uses: actions/checkout@v5
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+def run_command_with_env(cmd, env_vars=None):
+    """执行命令并传递环境变量"""
+    current_env = os.environ.copy()
+    if env_vars:
+        current_env.update(env_vars)
+    
+    result = subprocess.run(cmd, env=current_env, capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        print(f"Command failed: {' '.join(cmd)}")
+        print(f"Error: {result.stderr}")
+        return False
+    else:
+        print(f"Command succeeded: {' '.join(cmd)}")
+        if result.stdout:
+            print(f"Output: {result.stdout}")
+        return True
 
-      - name: Run Stock Scan Part 1
-        env:
-          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
-        run: python send_msg.py 1
+def main():
+    parser = argparse.ArgumentParser(description='Stock & ETF Multi-Bot Controller')
+    parser.add_argument('action', nargs='?', choices=['run', 'stock', 'etf'], 
+                       default='run', help='Action to perform')
+    args = parser.parse_args()
+    
+    # 获取环境变量
+    wechat_webhook_key = os.getenv('WECHAT_WEBHOOK_KEY')
+    gemini_api_key = os.getenv('GEMINI_API_KEY')
+    
+    if not wechat_webhook_key:
+        print("WARNING: WECHAT_WEBHOOK_KEY not set")
+    
+    print(f"Starting Stock & ETF Multi-Bot at {datetime.now()}")
+    
+    success = True
+    
+    if args.action in ['run', 'stock']:
+        print("\n=== Running Stock Job ===")
+        
+        # 运行股票扫描第一部分
+        print("Running Stock Scan Part 1...")
+        env_vars = {'WECHAT_WEBHOOK_KEY': wechat_webhook_key} if wechat_webhook_key else {}
+        if not run_command_with_env([sys.executable, 'send_msg.py', '1'], env_vars):
+            success = False
+        
+        time.sleep(2)  # 短暂延迟
+        
+        # 运行股票扫描第二部分
+        print("Running Stock Scan Part 2...")
+        if not run_command_with_env([sys.executable, 'send_msg.py', '2'], env_vars):
+            success = False
+        
+        time.sleep(2)  # 短暂延迟
+        
+        # 运行AI总结
+        print("Running AI Summary...")
+        summary_env_vars = {}
+        if wechat_webhook_key:
+            summary_env_vars['WECHAT_WEBHOOK_KEY'] = wechat_webhook_key
+        if gemini_api_key:
+            summary_env_vars['GEMINI_API_KEY'] = gemini_api_key
+            
+        if not run_command_with_env([sys.executable, 'send_msg.py', 'summary'], summary_env_vars):
+            success = False
+    
+    if args.action in ['run', 'etf']:
+        print("\n=== Running ETF Job ===")
+        
+        # 检查etf_bot.py是否存在
+        if os.path.exists('etf_bot.py'):
+            print("Running ETF Bot...")
+            etf_env_vars = {}
+            if wechat_webhook_key:
+                etf_env_vars['WECHAT_WEBHOOK_KEY'] = wechat_webhook_key
+            if gemini_api_key:
+                etf_env_vars['GEMINI_API_KEY'] = gemini_api_key
+                
+            if not run_command_with_env([sys.executable, 'etf_bot.py'], etf_env_vars):
+                success = False
+        else:
+            print("etf_bot.py not found, skipping ETF job")
+    
+    if success:
+        print(f"\nAll jobs completed successfully at {datetime.now()}")
+        sys.exit(0)
+    else:
+        print(f"\nSome jobs failed at {datetime.now()}")
+        sys.exit(1)
 
-      - name: Run Stock Scan Part 2
-        env:
-          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
-        run: python send_msg.py 2
-
-      - name: Run AI Summary
-        env:
-          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python send_msg.py summary
-
-  etf_job:
-    runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.schedule, '0 6')
-    steps:
-      - uses: actions/checkout@v5
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run ETF Bot
-        env:
-          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python etf_bot.py
+if __name__ == '__main__':
+    main()
