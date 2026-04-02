@@ -1,4 +1,4 @@
-name:weekly-record
+name: reminder.yml
 
 on:
   schedule:
