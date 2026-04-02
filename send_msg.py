@@ -1,238 +1,161 @@
 import pandas as pd
 import requests
 import akshare as ak
-import google.generativeai as genai
 import time
 import sys
 import os
 import json
 from datetime import datetime
 
-# ── 版本 ────────────────────────────────────────────────────────────────────
-VERSION = "v2026.04.02.CIO.Pro"
-
-# ── 环境变量 ─────────────────────────────────────────────────────────────────
-WEB_KEY    = os.environ.get("WECHAT_WEBHOOK_KEY")
+# 配置
+VERSION = "v2026.03.29.Elite.Final"
+VERSION = "v2026.03.29.CIO.Pro"
+WEB_KEY = os.environ.get("WECHAT_WEBHOOK_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
-
-# ── 企业微信推送 ──────────────────────────────────────────────────────────────
-
-def send_wechat(content: str):
-    if not WEB_KEY:
-        print("[WARN] WECHAT_WEBHOOK_KEY 未设置，跳过推送")
-        return
+def send_wechat(content):
+    if not WEB_KEY: return
     url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEB_KEY}"
     try:
-        resp = requests.post(
-            url,
-            json={"msgtype": "text", "text": {"content": content}},
-            timeout=10,
-        )
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"[WARN] 微信推送失败: {e}")
+        requests.post(url, json={"msgtype": "text", "text": {"content": content}}, timeout=10)
+    except: pass
 
-
-# ── 个股新闻（内参模块）────────────────────────────────────────────────────────
-
-def get_stock_news(code: str) -> str:
-    """抓取东方财富个股最近 3 条新闻标题，作为 AI 分析的内参。"""
+def check_strategy(code, name):
+def get_stock_news(code):
+    """
+    策略：价格(3-70) + 周线量能粘合(±3%) + 5周均量向上↗️ + 站稳25周线
+    【新增：内参模块】为指定个股抓取最近3条核心新闻标题
+    """
     try:
+        print(f"正在扫描: {name} ({code})...", end="\r")
+        # 获取东方财富个股新闻
         news_df = ak.stock_news_em(symbol=code)
-        if news_df is None or news_df.empty:
-            return "暂无近期核心公告。"
-        top_news = news_df["新闻标题"].head(3).tolist()
+        if news_df.empty: return "暂无近期核心公告。"
+        # 取前3条新闻标题，组合成摘要
+        top_news = news_df['新闻标题'].head(3).tolist()
         return " | ".join(top_news)
-    except Exception:
+    except:
         return "新闻检索接口繁忙。"
 
-
-# ── 周线策略判断 ──────────────────────────────────────────────────────────────
-
-def check_strategy(code: str, name: str) -> dict | None:
-    """
-    策略条件：
-      1. 价格区间 3~70 元（前复权）
-      2. 成交量 5 周均线向上
-      3. 量能偏离度 (V5 - V60) / V60 ∈ [-3%, +7%]（温和启动区间）
-      4. 现价站上 25 周均线
-
-    命中返回包含基础信息的 dict，否则返回 None。
-    """
+def check_strategy(code, name):
     try:
         df = ak.stock_zh_a_hist(symbol=code, period="weekly", adjust="qfq")
-        if df is None or len(df) < 65:
-            return None
-
-        curr_price = df["收盘"].iloc[-1]
+        if len(df) < 65: return False
+        
+        # 1. 价格限制: 3.0元 - 70.0元
+        curr_price = df['收盘'].iloc[-1]
         if not (3.0 <= curr_price <= 70.0):
-            return None
+            return False
+        if not (3.0 <= curr_price <= 70.0): return False
 
-        v5   = df["成交量"].rolling(5).mean()
-        v60  = df["成交量"].rolling(60).mean()
-        ma25 = df["收盘"].rolling(25).mean()
+        # 2. 计算量能指标
+        v5 = df['成交量'].rolling(5).mean()
+        v60 = df['成交量'].rolling(60).mean()
+        ma25 = df['收盘'].rolling(25).mean()
 
-        # NaN 防护
-        if any(pd.isna(x) for x in [v5.iloc[-1], v5.iloc[-2], v60.iloc[-1], ma25.iloc[-1]]):
-            return None
-
-        vol_up        = v5.iloc[-1] > v5.iloc[-2]
-        deviation     = (v5.iloc[-1] - v60.iloc[-1]) / v60.iloc[-1]
-        is_binding    = -0.03 <= deviation <= 0.07
+        # 3. 核心判定逻辑
+        vol_up = v5.iloc[-1] > v5.iloc[-2]               # 5周均量正在往上走
+        vol_up = v5.iloc[-1] > v5.iloc[-2]
+        deviation = abs(v5.iloc[-1] - v60.iloc[-1]) / v60.iloc[-1]
+        is_binding = deviation <= 0.03                 # 粘合度在 3% 以内
+        price_support = curr_price > ma25.iloc[-1]      # 站稳25周线(牛熊线)
+        is_binding = deviation <= 0.03
         price_support = curr_price > ma25.iloc[-1]
 
         if vol_up and is_binding and price_support:
-            amount = df["成交额"].iloc[-1] if "成交额" in df.columns else 0
-            return {
-                "name":   name,
-                "code":   code,
-                "price":  round(float(curr_price), 2),
-                "amount": round(float(amount), 0),
-            }
-        return None
-
-    except Exception as e:
-        print(f"[{code} {name}] check_strategy error: {e}")
-        return None
-
-
-# ── Gemini AI 深度分析 ────────────────────────────────────────────────────────
-
-def ai_analyse(top_hits: list, now_str: str, period_tag: str) -> str:
-    """
-    把 Top 标的 + 各自内参新闻喂给 Gemini，输出 CIO 级深度决策报告。
-    失败时返回空字符串，不影响主流程。
-    """
-    if not GEMINI_KEY:
-        print("[WARN] GEMINI_API_KEY 未设置，跳过 AI 分析")
-        return ""
-
-    enriched_list = []
-    for stock in top_hits:
-        print(f"  正在抓取内参: {stock['name']}...")
-        news = get_stock_news(stock["code"])
-        enriched_list.append(
-            f"- {stock['name']}（{stock['code']}）现价 {stock['price']} 元 | 内参: {news}"
-        )
-
-    prompt = (
-        f"你是具备全球视野的首席投资官。当前北京时间 {now_str} {period_tag}。\n"
-        f"以下是 {len(top_hits)} 只量能突破标的及其【实时核心新闻内参】。请执行深度复核：\n\n"
-        f"【决策维度】\n"
-        f"1. 基于内参推理：分析所给新闻对股价的短期/中期影响。有重大利空（如立案、减持）直接判死刑。\n"
-        f"2. 宏观背景联动：结合当前国内外大形势（如关税、地缘政治等）判断该行业是否处于风口。\n"
-        f"3. 星级评定：5星严格限制在 1-2 只，用🌟表示。\n\n"
-        f"【输出格式】\n"
-        f"获星标的：🌟🌟... 股票名(代码) + 30字内深度走向预测（必须结合内参或宏观背景）\n"
-        f"未获星标的：仅列出 代码 名称\n\n"
-        f"【待分析内参名单】\n"
-        + "\n".join(enriched_list)
-    )
-
-    try:
-        genai.configure(api_key=GEMINI_KEY)
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        resp  = model.generate_content(prompt)
-        return resp.text.strip()
-    except Exception as e:
-        print(f"[WARN] Gemini 分析失败: {e}")
-        return ""
-
-
-# ── 主逻辑 ────────────────────────────────────────────────────────────────────
+            print(f"\n🎯 命中信号: {name}({code}) | 价格:{curr_price} | 偏离度:{deviation:.2%}")
+            return True
+        return False
+    except: return False
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python send_msg.py <1|2|summary>")
-        return
-
-    mode       = sys.argv[1]
-    now        = datetime.now()
-    now_str    = now.strftime("%Y-%m-%d %H:%M")
+    if len(sys.argv) < 2: return
+    mode = sys.argv[1]
+    now = datetime.now()
+    now_str = now.strftime('%Y-%m-%d %H:%M')
     period_tag = "【早盘观察】" if now.hour < 12 else "【尾盘决策】"
 
-    # ── summary 模式 ──────────────────────────────────────────────────────────
+    # --- 启动通知 ---
+    if mode == "1":
+        send_wechat(f"📢 机器人启动通知\n时间: {now_str}\n任务: {period_tag} 扫描开始...")
+        send_wechat(f"📢 机器人启动\n时间: {now_str}\n任务: {period_tag} 扫描开始...")
+
     if mode == "summary":
         all_hits = []
         for f in ["hits_part1.json", "hits_part2.json"]:
             if os.path.exists(f):
-                with open(f, "r", encoding="utf-8") as fp:
-                    all_hits += json.load(fp)
+                with open(f, "r") as file: 
+                    all_hits += json.load(file)
+                with open(f, "r") as file: all_hits += json.load(file)
 
         if not all_hits:
+            send_wechat(f"📅 {now_str}\n{period_tag} 扫描结束，今日未发现符合要求标的。")
             send_wechat(f"📅 {now_str}\n{period_tag} 扫描结束，未发现信号标的。")
             return
 
-        top_hits = sorted(all_hits, key=lambda x: x["amount"], reverse=True)[:10]
+        # 选成交额前 10 名进入 AI 决赛圈
+        # 选成交额 Top 10
+        top_hits = sorted(all_hits, key=lambda x: x['amount'], reverse=True)[:10]
 
-        ai_text = ai_analyse(top_hits, now_str, period_tag)
+        # --- 核心改进：为 Top 10 逐一装载“内参” ---
+        enriched_list = []
+        for stock in top_hits:
+            print(f"正在抓取内参: {stock['name']}...")
+            news = get_stock_news(stock['code'])
+            enriched_list.append(f"- {stock['name']}({stock['code']}): {news}")
+        
+        api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
 
-        if ai_text:
-            msg = (
-                f"🌟 {period_tag} 深度决策报告\n"
-                f"时间: {now_str}\n\n"
-                f"{ai_text}\n\n"
-                f"📊 今日总信号: {len(all_hits)}"
-            )
-        else:
-            # AI 失败时降级为纯列表推送
-            lines = [f"🌟 {now_str}  {period_tag}  共发现 {len(all_hits)} 只标的（Top {len(top_hits)}）\n"]
-            for i, h in enumerate(top_hits, 1):
-                lines.append(
-                    f"{i}. {h['name']}（{h['code']}）"
-                    f"  价格:{h['price']}  额:{int(h['amount'] / 1e4)}万"
-                )
-            msg = "\n".join(lines)
-
-        send_wechat(msg)
-        return
-
-    # ── 扫描模式（part 1 / 2）────────────────────────────────────────────────
-    try:
-        part = int(mode)
-        assert part in (1, 2)
-    except (ValueError, AssertionError):
-        print("mode 必须是 1、2 或 summary")
-        return
-
-    if part == 1:
-        send_wechat(f"📢 机器人启动\n时间: {now_str}\n任务: {period_tag} 扫描开始...")
-
-    try:
-        spot_df = ak.stock_zh_a_spot_em()
-        spot_df["code"] = spot_df["代码"].astype(str).str.zfill(6)
-        active = (
-            spot_df[spot_df["code"].str.startswith(("60", "00"))]
-            .sort_values(by="成交额", ascending=False)
-            .head(1200)
-            .reset_index(drop=True)
+        # --- 核心 Prompt: AI 最高权重分析 ---
+        prompt = (
+            f"你是具备全球视野的首席投资官。当前时间 {now_str} {period_tag}。\n"
+            f"以下10只个股通过了量能粘合筛选。请执行最高权重的深度复核：\n\n"
+            f"1. **检索近期新闻**：请检索这10只标的最近48小时内的【核心公告、行业利好/利空、突发新闻】。\n"
+            f"2. **结合宏观背景**：结合当前【国内外宏观形势】（如美联储利率政策、美元汇率、地缘政治）评估该行业走向。\n"
+            f"3. **星级评定**：用实心星号展示（如：🌟🌟🌟🌟🌟）。\n"
+            f"   - 【5星】仅限 1-2 只：代表‘技术面+新闻利好+宏观受益’的最优解。\n"
+            f"   - 其他根据潜力给 1-4 星。\n"
+            f"4. **输出要求**：\n"
+            f"   - 获星标的：🌟🌟... 股票名(代码) + 30字内走向预测（必须结合新闻或宏观依据）。\n"
+            f"   - 未获星标的：在下方仅以‘代码 名称’形式列出，不要点评。\n\n"
+            f"待分析名单：\n"
+            + "\n".join([f"- {x['name']}({x['code']}), 成交额:{x['amount']/1e8:.2f}亿" for x in top_hits])
+            f"你是具备全球视野的首席投资官。当前北京时间 {now_str} {period_tag}。\n"
+            f"以下是 10 只量能突破标的及其【实时核心新闻内参】。请执行深度复核：\n\n"
+            f"【决策维度】：\n"
+            f"1. **基于内参推理**：分析所给新闻对股价的短期/中期影响。有重大利空（如立案、减持）直接判死刑。\n"
+            f"2. **宏观背景联动**：结合当前国内外大形势（如美国加息、地缘政治等）判断该行业是否处于风口。\n"
+            f"3. **星级评定**：5星严格限制在 1-2 只。用🌟表示星级。\n\n"
+            f"【输出要求】：\n"
+            f"   - 🌟🌟... 股票名(代码) + 30字内深度走向预测（必须结合所给内参或宏观背景）。\n"
+            f"   - 未获星标的：仅在下方显示“代码 名称”。\n\n"
+            f"【待分析内参名单】：\n"
+            + "\n".join(enriched_list)
         )
-    except Exception as e:
-        send_wechat(f"❌ 获取行情列表失败: {str(e)[:80]}")
-        return
 
-    batch = active.head(600) if part == 1 else active.tail(600)
-    print(f"[Part {part}] 本批共 {len(batch)} 只，开始扫描…")
+        try:
+            res = requests.post(api_url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=60)
+            ai_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+            send_wechat(f"🌟 {period_tag} 深度决策报告\n时间: {now_str}\n\n{ai_text}\n\n📊 今日总信号数: {len(all_hits)}")
+            send_wechat(f"🌟 {period_tag} 深度决策报告\n时间: {now_str}\n\n{ai_text}\n\n📊 今日总信号: {len(all_hits)}")
+        except Exception as e:
+            send_wechat(f"❌ AI 决策阶段异常: {str(e)[:100]}")
+            send_wechat(f"❌ AI 决策异常: {str(e)[:100]}")
 
-    hits = []
-    for _, row in batch.iterrows():
-        code = str(row["code"]).zfill(6)
-        name = str(row["名称"])
-        result = check_strategy(code, name)
-        if result:
-            # 用实时成交额覆盖（单位统一、更准确）
-            result["amount"] = float(row.get("成交额", result["amount"]))
-            hits.append(result)
-            print(f"  ✅ HIT: {name}({code})  price={result['price']}")
-        time.sleep(0.15)
+    else:
+        # Part 1/2 扫描逻辑保持不变
+        part = int(mode)
+        df = ak.stock_zh_a_spot_em()
+        df['code'] = df['代码'].astype(str).str.zfill(6)
+        # 筛选活跃度前 1200 名的主板股票
+        active = df[df['code'].str.startswith(('60','00'))].sort_values(by='成交额', ascending=False).head(1200)
+        batch = active.head(600) if part == 1 else active.tail(600)
+        
+        hits = []
+        for _, row in batch.iterrows():
+            if check_strategy(row['code'], row['名称']):
+                hits.append({"name": row['名称'], "code": row['code'], "amount": row['成交额']})
+        
+        with open(f"hits_part{part}.json", "w") as f: json.dump(hits, f)
 
-    out_file = f"hits_part{part}.json"
-    with open(out_file, "w", encoding="utf-8") as fp:
-        json.dump(hits, fp, ensure_ascii=False, indent=2)
-
-    print(f"[Part {part}] 完成，命中 {len(hits)} 只，结果已写入 {out_file}")
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
