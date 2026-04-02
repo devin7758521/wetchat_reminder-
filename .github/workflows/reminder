@@ -1,0 +1,59 @@
+name:weekly-record
+
+on:
+  schedule:
+    # 北京时间 11:35 (UTC 03:35)
+    - cron: '35 3 * * 1-5'
+    # 北京时间 15:30 (UTC 07:30)
+    - cron: '30 7 * * 1-5'
+    # 北京时间 08:00 (UTC 00:00)
+    - cron: '0 0 * * 1-5'
+    # 北京时间 14:10 (UTC 06:10)
+    - cron: '10 6 * * 1-5'
+    # 北京时间 13:55 (UTC 05:55)
+    - cron: '55 5 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  stock_job:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Stock Scan Part 1
+        env:
+          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
+        run: python send_msg.py 1
+
+      - name: Run Stock Scan Part 2
+        env:
+          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
+        run: python send_msg.py 2
+
+      - name: Run AI Summary
+        env:
+          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python send_msg.py summary
+
+  etf_job:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' || 
+      contains(github.event.schedule, '55 5') || 
+      contains(github.event.schedule, '10 6')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ETF Bot
+        env:
+          WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          pip install -r requirements.txt
+          python etf_bot.py
