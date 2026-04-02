@@ -36,7 +36,7 @@ def get_stock_news(code):
 
 
 def check_strategy(code, name):
-    """策略：价格(3-70) + 周线量能粘合(±3%) + 5周均量向上 + 站稳25周线"""
+    """策略：价格(3-70) + 周线量能粘合(-3%到7%) + 5周均量向上 + 站稳25周线"""
     try:
         df = ak.stock_zh_a_hist(symbol=code, period="weekly", adjust="qfq")
         if len(df) < 65:
@@ -55,7 +55,7 @@ def check_strategy(code, name):
         # 3. 核心判定逻辑
         vol_up = v5.iloc[-1] > v5.iloc[-2]               # 5周均量正在往上走
         deviation = abs(v5.iloc[-1] - v60.iloc[-1]) / v60.iloc[-1]
-        is_binding = deviation <= 0.03                  # 粘合度在 3% 以内
+        is_binding = 0.03 <= deviation <= 0.07          # 粘合度在 -3% 到 7% 之间
         price_support = curr_price > ma25.iloc[-1]      # 站稳25周线(牛熊线)
 
         if vol_up and is_binding and price_support:
@@ -89,7 +89,7 @@ def main():
             send_wechat(f"📅 {now_str}\n{period_tag} 扫描结束，今日未发现符合要求标的。")
             return
 
-        # 选成交额 Top 10
+        # 选成交额 Top 10（如果没有10个，就全部显示）
         top_hits = sorted(all_hits, key=lambda x: x['amount'], reverse=True)[:10]
 
         # 为 Top 10 逐一装载"内参"
@@ -120,20 +120,28 @@ def main():
             ai_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
             send_wechat(f"🌟 {period_tag} 深度决策报告\n时间: {now_str}\n\n{ai_text}\n\n📊 今日总信号: {len(all_hits)}")
         except Exception as e:
-            send_wechat(f"❌ AI 决策异常: {str(e)[:100]}")
+            send_wechat(f"❌ AI 冖策异常: {str(e)[:100]}")
 
     else:
         # Part 1/2 扫描逻辑
         part = int(mode)
         df = ak.stock_zh_a_spot_em()
-        df['code'] = df['代码'].astype(str).str.zfill(6)
-        active = df[df['code'].str.startswith(('60', '00'))].sort_values(by='成交额', ascending=False).head(1200)
+        
+        # 过滤条件：60和00开头的票，不要ST，价格在3-70元之间
+        df = df[
+            (df['代码'].astype(str).str.startswith(('60', '00'))) & 
+            (~df['名称'].str.contains('ST')) & 
+            (3.0 <= df['最新价'] <= 70.0)
+        ]
+        
+        # 按成交额排序，取前1200名
+        active = df.sort_values(by='成交额', ascending=False).head(1200)
         batch = active.head(600) if part == 1 else active.tail(600)
 
         hits = []
         for _, row in batch.iterrows():
-            if check_strategy(row['code'], row['名称']):
-                hits.append({"name": row['名称'], "code": row['code'], "amount": row['成交额']})
+            if check_strategy(row['代码'], row['名称']):
+                hits.append({"name": row['名称'], "code": row['代码'], "amount": row['成交额']})
 
         with open(f"hits_part{part}.json", "w") as f:
             json.dump(hits, f)
