@@ -5,6 +5,7 @@ import time
 import sys
 import os
 import json
+import re
 from datetime import datetime
 
 # 配置
@@ -66,6 +67,50 @@ def check_strategy(code, name):
         return False
 
 
+def optimize_weekly_stars():
+    """周五优化分析本周四星以上股票"""
+    if not os.path.exists("weekly_stars.json"):
+        send_wechat("📅 周五优化：本周无四星以上股票记录。")
+        return
+    
+    with open("weekly_stars.json", "r") as f:
+        weekly_stars = json.load(f)
+    
+    if not weekly_stars:
+        send_wechat("📅 周五优化：本周无四星以上股票记录。")
+        return
+    
+    now = datetime.now()
+    now_str = now.strftime('%Y-%m-%d %H:%M')
+    period_tag = "【周五优化决策】"
+    
+    api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+
+    prompt = (
+        f"你是具备全球视野的首席投资官。当前北京时间 {now_str} {period_tag}。\n"
+        f"以下是本周（周一至周四）选出的四星以上标的名单：\n\n"
+        f"【本周四星以上标的】：\n"
+        + "\n".join([f"- {stock['name']}({stock['code']})" for stock in weekly_stars])
+        + "\n\n"
+        f"【决策维度】：\n"
+        f"1. **综合评级**：基于本周表现和当前市场环境，重新评定星级（5星严格限制在1-2只）。\n"
+        f"2. **短期走势**：预测下周走势，给出买入/持有/卖出建议。\n"
+        f"3. **风险提示**：指出潜在风险（如政策、业绩）。\n\n"
+        f"【输出要求】：\n"
+        f"   - 🌟🌟... 股票名(代码) + 30字内深度分析（必须结合本周表现和当前环境）。\n"
+        f"   - 未获星标的：仅在下方显示\"代码 名称\"。\n\n"
+        f"【待优化标的】：\n"
+        + "\n".join([f"- {stock['name']}({stock['code']})" for stock in weekly_stars])
+    )
+
+    try:
+        res = requests.post(api_url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=60)
+        ai_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+        send_wechat(f"🌟 周五优化决策报告\n时间: {now_str}\n\n{ai_text}\n\n📊 本周四星以上标的总数: {len(weekly_stars)}")
+    except Exception as e:
+        send_wechat(f"❌ 周五优化AI决策异常: {str(e)[:100]}")
+
+
 def main():
     if len(sys.argv) < 2:
         return
@@ -73,6 +118,11 @@ def main():
     now = datetime.now()
     now_str = now.strftime('%Y-%m-%d %H:%M')
     period_tag = "【早盘观察】" if now.hour < 12 else "【尾盘决策】"
+
+    # 周一启动时清空weekly_stars.json
+    if mode == "1" and now.weekday() == 0:  # 周一
+        if os.path.exists("weekly_stars.json"):
+            os.remove("weekly_stars.json")
 
     # --- 启动通知 ---
     if mode == "1":
@@ -119,6 +169,26 @@ def main():
             res = requests.post(api_url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=60)
             ai_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
             send_wechat(f"🌟 {period_tag} 深度决策报告\n时间: {now_str}\n\n{ai_text}\n\n📊 今日总信号: {len(all_hits)}")
+            
+            # 解析四星以上的股票并保存到weekly_stars.json
+            stars = []
+            for line in ai_text.split('\n'):
+                if '🌟🌟🌟🌟' in line or '🌟🌟🌟🌟🌟' in line:
+                    match = re.search(r'([^\s(]+)\((\d+)\)', line)
+                    if match:
+                        name = match.group(1)
+                        code = match.group(2)
+                        stars.append({"name": name, "code": code, "star": "4+"})
+            
+            if stars:
+                with open("weekly_stars.json", "a") as f:
+                    json.dump(stars, f, indent=2)
+                    f.write("\n")  # 添加换行符分隔不同天的记录
+            
+            # 周五时进行优化分析
+            if now.weekday() == 4:  # 周五
+                optimize_weekly_stars()
+                
         except Exception as e:
             send_wechat(f"❌ AI 决策异常: {str(e)[:100]}")
 
@@ -131,7 +201,7 @@ def main():
         df = df[
             (df['代码'].astype(str).str.startswith(('60', '00'))) & 
             (~df['名称'].str.contains('ST')) & 
-            (3.0 <= df['最新价']) & (df['最新价'] <= 70.0)  # 修复这里的布尔比较
+            (3.0 <= df['最新价']) & (df['最新价'] <= 70.0)
         ]
         
         # 按成交额排序，取前1200名
