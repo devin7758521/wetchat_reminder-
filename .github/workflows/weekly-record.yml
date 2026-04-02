@@ -1,4 +1,4 @@
-name: Stock & ETF Multi-Bot v16
+name:weekly-record
 
 on:
   schedule:
