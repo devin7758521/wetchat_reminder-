@@ -114,12 +114,27 @@ def main():
             send_wechat(f"❌ AI 决策异常: {str(e)[:100]}")
             
     else:
-        # Part 1/2 扫描逻辑保持不变
+        # Part 1/2 扫描逻辑
         part = int(mode)
         df = ak.stock_zh_a_spot_em()
         df['code'] = df['代码'].astype(str).str.zfill(6)
-        active = df[df['code'].str.startswith(('60','00'))].sort_values(by='成交额', ascending=False).head(1200)
-        batch = active.head(600) if part == 1 else active.tail(600)
+        
+        # --- 修改处开始：调整筛选顺序 ---
+        # 1. 选 60 00 开头的票 (akshare 默认通常不含ST，若需严格过滤可加 df['名称'].str.contains('ST') 取反)
+        active = df[df['code'].str.startswith(('60','00'))]
+        
+        # 2. 再从上面选出的票中选 3 到 70 元的票
+        # 确保价格为数值类型
+        active['最新价'] = pd.to_numeric(active['最新价'], errors='coerce')
+        price_filtered = active[(active['最新价'] >= 3.0) & (active['最新价'] <= 70.0)]
+        
+        # 3. 再选出成交额排名前 1200 的
+        # 确保成交额为数值类型
+        price_filtered['成交额'] = pd.to_numeric(price_filtered['成交额'], errors='coerce')
+        top_1200 = price_filtered.sort_values(by='成交额', ascending=False).head(1200)
+        # --- 修改处结束 ---
+        
+        batch = top_1200.head(600) if part == 1 else top_1200.tail(600)
         hits = []
         for _, row in batch.iterrows():
             if check_strategy(row['code'], row['名称']):
