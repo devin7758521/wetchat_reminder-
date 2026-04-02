@@ -6,7 +6,7 @@ import sys
 import os
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 配置
 VERSION = "v2026.03.29.CIO.Pro"
@@ -36,31 +36,49 @@ def get_stock_news(code):
         return {"status": f"❌ 新闻检索异常: {str(e)[:50]}", "news": "", "code": code}
 
 
-def check_strategy(code, name):
-    """策略：价格(3-70) + 周线量能粘合(-3%到7%) + 5周均量向上 + 站稳25周线"""
+def check_strategy(code, name, realtime_spot_dict):
+    """策略：价格(3-70) + 周线量能粘合(3%到7%) + 5周均量向上 + 站稳25周线"""
     try:
-        df = ak.stock_zh_a_hist(symbol=code, period="weekly", adjust="qfq")
-        if len(df) < 65:
+        # 获取日线数据（用于动态计算本周量能）
+        df_daily = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq")
+        if df_daily.empty:
+            return False
+        
+        # 获取周线数据（用于计算历史均量和均线）
+        df_weekly = ak.stock_zh_a_hist(symbol=code, period="weekly", adjust="qfq")
+        if len(df_weekly) < 65:
             return False
 
-        # 1. 价格限制: 3.0元 - 70.0元
-        curr_price = df['收盘'].iloc[-1]
+        # 获取实时价格（直接从内存字典读取，0延迟，0反爬风险）
+        if code in realtime_spot_dict:
+            curr_price = realtime_spot_dict[code]
+        else:
+            # 如果由于停牌等原因不在实时列表，用日线最后一条的收盘价
+            curr_price = df_daily['收盘'].iloc[-1]
+
         if not (3.0 <= curr_price <= 70.0):
             return False
 
-        # 2. 计算量能指标
-        v5 = df['成交量'].rolling(5).mean()
-        v60 = df['成交量'].rolling(60).mean()
-        ma25 = df['收盘'].rolling(25).mean()
-
-        # 3. 核心判定逻辑
-        vol_up = v5.iloc[-1] > v5.iloc[-2]               # 5周均量正在往上走
-        deviation = abs(v5.iloc[-1] - v60.iloc[-1]) / v60.iloc[-1]
-        is_binding = 0.03 <= deviation <= 0.07          # 粘合度在 -3% 到 7% 之间
-        price_support = curr_price > ma25.iloc[-1]      # 站稳25周线(牛熊线)
+        # 动态计算周线量能指标（使用日线聚合，完美解决周中数据滞后问题）
+        df_daily['week'] = df_daily.index.to_period('W')
+        weekly_volumes = df_daily.groupby('week')['成交量'].sum()
+        latest_weekly_data = weekly_volumes.tail(65) 
+        
+        v5 = latest_weekly_data.rolling(5).mean()
+        v60 = latest_weekly_data.rolling(60).mean()
+        
+        latest_v5 = v5.iloc[-1]
+        latest_v60 = v60.iloc[-1]
+        
+        # 核心判定逻辑
+        vol_up = latest_v5 > v5.iloc[-2] if len(v5) > 1 else False
+        deviation = abs(latest_v5 - latest_v60) / latest_v60
+        is_binding = 0.03 <= deviation <= 0.07          
+        ma25 = df_weekly['收盘'].rolling(25).mean()
+        price_support = curr_price > ma25.iloc[-1]      
 
         if vol_up and is_binding and price_support:
-            print(f"\n🎯 命中信号: {name}({code}) | 价格:{curr_price} | 偏离度:{deviation:.2%}")
+            print(f"\n🎯 命中信号: {name}({code}) | 现价:{curr_price} | 偏离度:{deviation:.2%}")
             return True
         return False
     except:
@@ -73,7 +91,7 @@ def optimize_weekly_stars():
         send_wechat("📅 周五优化：本周无四星以上股票记录。")
         return
     
-    with open("weekly_stars.json", "r") as f:
+    with open("weekly_stars.json", "r", encoding="utf-8") as f:
         weekly_stars = json.load(f)
     
     if not weekly_stars:
@@ -132,7 +150,7 @@ def main():
         all_hits = []
         for f in ["hits_part1.json", "hits_part2.json"]:
             if os.path.exists(f):
-                with open(f, "r") as file:
+                with open(f, "r", encoding="utf-8") as file:
                     all_hits += json.load(file)
 
         if not all_hits:
@@ -144,7 +162,7 @@ def main():
 
         # 为 Top 10 逐一装载"内参"
         enriched_list = []
-        news_status = []  # 记录内参获取状态
+        news_status = []  
         for stock in top_hits:
             print(f"📊 正在抓取内参: {stock['name']}({stock['code']})...")
             news_result = get_stock_news(stock['code'])
@@ -182,19 +200,16 @@ def main():
                 f"🎯 符合技术指标的股票：\n"
             )
             
-            # 解析符合技术指标的股票
-            tech_stocks = []
             for stock in all_hits:
                 wechat_content += f"- {stock['name']}({stock['code']})\n"
             
             wechat_content += f"\n{ai_text}"
-            
             send_wechat(wechat_content)
             
-            # 解析四星以上的股票并保存到weekly_stars.json
+            # 解析四星以上的股票并保存到weekly_stars.json (修复了之前追加导致JSON格式错误的Bug)
             stars = []
             for line in ai_text.split('\n'):
-                if '🌟🌟🌟🌟' in line or '🌟🌟🌟🌟🌟' in line:
+                if '🌟🌟🌟🌟' in line:
                     match = re.search(r'([^\s(]+)\((\d+)\)', line)
                     if match:
                         name = match.group(1)
@@ -202,9 +217,19 @@ def main():
                         stars.append({"name": name, "code": code, "star": "4+"})
             
             if stars:
-                with open("weekly_stars.json", "a") as f:
-                    json.dump(stars, f, indent=2)
-                    f.write("\n")  # 添加换行符分隔不同天的记录
+                # 读取现有记录
+                existing_stars = []
+                if os.path.exists("weekly_stars.json"):
+                    try:
+                        with open("weekly_stars.json", "r", encoding="utf-8") as f:
+                            existing_stars = json.load(f)
+                    except:
+                        existing_stars = []
+                
+                # 合并并覆盖写入，保证JSON格式绝对合法
+                existing_stars.extend(stars)
+                with open("weekly_stars.json", "w", encoding="utf-8") as f:
+                    json.dump(existing_stars, f, indent=2, ensure_ascii=False)
             
             # 周五时进行优化分析
             if now.weekday() == 4:  # 周五
@@ -229,6 +254,9 @@ def main():
         active = df.sort_values(by='成交额', ascending=False).head(1200)
         batch = active.head(600) if part == 1 else active.tail(600)
 
+        # 【核心优化】将实时价格构建成字典 {代码: 最新价}，传给策略函数
+        spot_dict = dict(zip(df['代码'].astype(str), df['最新价']))
+
         hits = []
         total_stocks = len(batch)
         print(f"📊 开始扫描 {total_stocks} 只股票...")
@@ -238,12 +266,13 @@ def main():
             stock_code = row['代码']
             print(f"🔄 正在扫描 {i}/{total_stocks}: {stock_name}({stock_code})")
             
-            if check_strategy(stock_code, stock_name):
+            # 把 spot_dict 传进去
+            if check_strategy(stock_code, stock_name, spot_dict):
                 hits.append({"name": stock_name, "code": stock_code, "amount": row['成交额']})
 
         print(f"✅ 扫描完成，找到 {len(hits)} 只符合策略的股票")
-        with open(f"hits_part{part}.json", "w") as f:
-            json.dump(hits, f)
+        with open(f"hits_part{part}.json", "w", encoding="utf-8") as f:
+            json.dump(hits, f, ensure_ascii=False)
 
 
 if __name__ == "__main__":
