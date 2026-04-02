@@ -120,7 +120,7 @@ def main():
             ai_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
             send_wechat(f"🌟 {period_tag} 深度决策报告\n时间: {now_str}\n\n{ai_text}\n\n📊 今日总信号: {len(all_hits)}")
         except Exception as e:
-            send_wechat(f"❌ AI 冖策异常: {str(e)[:100]}")
+            send_wechat(f"❌ AI 决策异常: {str(e)[:100]}")
 
     else:
         # Part 1/2 扫描逻辑
@@ -131,7 +131,7 @@ def main():
         df = df[
             (df['代码'].astype(str).str.startswith(('60', '00'))) & 
             (~df['名称'].str.contains('ST')) & 
-            (3.0 <= df['最新价'] <= 70.0)
+            (3.0 <= df['最新价']) & (df['最新价'] <= 70.0)  # 修复这里的布尔比较
         ]
         
         # 按成交额排序，取前1200名
