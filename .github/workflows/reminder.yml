@@ -3,8 +3,8 @@ name: Stock Reminder
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 1 * * 1-5'   # 北京时间 09:30 (早盘)
-    - cron: '45 6 * * 1-5'   # 北京时间 14:45 (尾盘)
+    - cron: '30 1 * * 1-5'
+    - cron: '45 6 * * 1-5'
 
 jobs:
   build:
@@ -20,13 +20,13 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas requests akshare
+          # 强制更新库以确保接口最新
+          pip install --upgrade pandas requests akshare 
 
       - name: Part 1 Scan
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
         run: |
-          # 增加重试逻辑，防止瞬时网络抖动
           python send_msg.py 1 || (sleep 15 && python send_msg.py 1)
 
       - name: Part 2 Scan
