@@ -29,11 +29,11 @@ def get_stock_news(code):
     try:
         news_df = ak.stock_news_em(symbol=code)
         if news_df.empty:
-            return "暂无近期核心公告。"
+            return {"status": "暂无近期核心公告", "news": "", "code": code}
         top_news = news_df['新闻标题'].head(3).tolist()
-        return " | ".join(top_news)
-    except:
-        return "新闻检索接口繁忙。"
+        return {"status": "✅ 内参获取成功", "news": " | ".join(top_news), "code": code}
+    except Exception as e:
+        return {"status": f"❌ 新闻检索异常: {str(e)[:50]}", "news": "", "code": code}
 
 
 def check_strategy(code, name):
@@ -144,10 +144,12 @@ def main():
 
         # 为 Top 10 逐一装载"内参"
         enriched_list = []
+        news_status = []  # 记录内参获取状态
         for stock in top_hits:
-            print(f"正在抓取内参: {stock['name']}...")
-            news = get_stock_news(stock['code'])
-            enriched_list.append(f"- {stock['name']}({stock['code']}): {news}")
+            print(f"📊 正在抓取内参: {stock['name']}({stock['code']})...")
+            news_result = get_stock_news(stock['code'])
+            enriched_list.append(f"- {stock['name']}({stock['code']}): {news_result['news']}")
+            news_status.append(f"{stock['name']}({stock['code']}): {news_result['status']}")
 
         api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
 
@@ -168,7 +170,26 @@ def main():
         try:
             res = requests.post(api_url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=60)
             ai_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-            send_wechat(f"🌟 {period_tag} 深度决策报告\n时间: {now_str}\n\n{ai_text}\n\n📊 今日总信号: {len(all_hits)}")
+            
+            # 构建微信消息内容
+            wechat_content = (
+                f"🌟 {period_tag} 深度决策报告\n"
+                f"时间: {now_str}\n\n"
+                f"📊 今日总信号: {len(all_hits)}\n\n"
+                f"📰 内参获取状态：\n"
+                + "\n".join(news_status)
+                + "\n\n"
+                f"🎯 符合技术指标的股票：\n"
+            )
+            
+            # 解析符合技术指标的股票
+            tech_stocks = []
+            for stock in all_hits:
+                wechat_content += f"- {stock['name']}({stock['code']})\n"
+            
+            wechat_content += f"\n{ai_text}"
+            
+            send_wechat(wechat_content)
             
             # 解析四星以上的股票并保存到weekly_stars.json
             stars = []
@@ -209,10 +230,18 @@ def main():
         batch = active.head(600) if part == 1 else active.tail(600)
 
         hits = []
-        for _, row in batch.iterrows():
-            if check_strategy(row['代码'], row['名称']):
-                hits.append({"name": row['名称'], "code": row['代码'], "amount": row['成交额']})
+        total_stocks = len(batch)
+        print(f"📊 开始扫描 {total_stocks} 只股票...")
+        
+        for i, (_, row) in enumerate(batch.iterrows(), 1):
+            stock_name = row['名称']
+            stock_code = row['代码']
+            print(f"🔄 正在扫描 {i}/{total_stocks}: {stock_name}({stock_code})")
+            
+            if check_strategy(stock_code, stock_name):
+                hits.append({"name": stock_name, "code": stock_code, "amount": row['成交额']})
 
+        print(f"✅ 扫描完成，找到 {len(hits)} 只符合策略的股票")
         with open(f"hits_part{part}.json", "w") as f:
             json.dump(hits, f)
 
