@@ -1,44 +1,58 @@
-name: reminder
+name: Stock & ETF Analysis Bot
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # 允许手动触发
+  # 可选：添加定时触发（如每天运行）
+  # schedule:
+  #   - cron: '0 9 * * *'  # 每天9点运行
 
 jobs:
   stock_job:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11'  # 与代码兼容的Python版本
+
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt  # 确保所有依赖已安装
 
       - name: Run Stock Scan Part 1
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
-        run: python send_msg.py 1
+        run: python send_msg.py 1  # 扫描模式1
 
       - name: Run Stock Scan Part 2
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
-        run: python send_msg.py 2
+        run: python send_msg.py 2  # 扫描模式2
 
       - name: Run AI Summary
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python send_msg.py summary
+        run: python send_msg.py summary  # 总结模式（调用Gemini）
 
   etf_job:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt  # 补充依赖安装（原YML缺少此步）
+
       - name: Run ETF Bot
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          pip install -r requirements.txt
-          python etf_bot.py
+        run: python etf_bot.py  # 运行ETF分析脚本
