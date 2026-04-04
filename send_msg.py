@@ -42,10 +42,13 @@ def check_strategy(code, name, realtime_spot_dict):
     # ------------------------------
     
     try:
+        print(f"🔍 开始分析 {name}({code})...")
+        
         # 【核心优化1】强制拉取800天数据，确保超过60周(300天)的最低要求
         start_date = (datetime.now() - timedelta(days=800)).strftime('%Y%m%d')
         df_daily = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq", start_date=start_date)
         if df_daily.empty:
+            print(f"❌ {name}({code}): 日线数据为空")
             return False
         
         # 获取实时价格
@@ -53,11 +56,13 @@ def check_strategy(code, name, realtime_spot_dict):
             curr_price = realtime_spot_dict[code]
         else:
             curr_price = df_daily['收盘'].iloc[-1]
-
+        print(f"💰 {name}({code}): 实时价格 {curr_price:.2f}")
+        
         # 价格过滤
         if not (3.0 <= curr_price <= 70.0):
+            print(f"❌ {name}({code}): 价格不在3-70区间")
             return False
-
+            
         # --- 1. 动态计算周线量能指标（解决周一到周四选不出的问题）---
         df_daily = df_daily.copy()
         df_daily['week'] = df_daily.index.to_period('W')
@@ -70,11 +75,12 @@ def check_strategy(code, name, realtime_spot_dict):
         if current_week_days > 0:
             estimated_full_week_vol = weekly_volumes.iloc[-1] * (5.0 / current_week_days)
             weekly_volumes.iloc[-1] = estimated_full_week_vol
+            print(f"📊 {name}({code}): 本周{current_week_days}天数据，周化拟合完成")
             
-        latest_weekly_data = weekly_volumes.tail(65) 
+        latest_weekly_data = weekly_volumes.tail(65)
         
-        # 确保有足够数据计算60周均量
-        if len(latest_weekly_data) < 61: 
+        if len(latest_weekly_data) < 61:
+            print(f"❌ {name}({code}): 周线数据不足61周，只有 {len(latest_weekly_data)} 周")
             return False
 
         v5 = latest_weekly_data.rolling(5).mean()
@@ -83,29 +89,33 @@ def check_strategy(code, name, realtime_spot_dict):
         latest_v5 = v5.iloc[-1]
         latest_v60 = v60.iloc[-1]
         
+        print(f"📈 {name}({code}): 5周均量 {latest_v5:.2f}, 60周均量 {latest_v60:.2f}")
+        
         if pd.isna(latest_v5) or pd.isna(latest_v60) or latest_v60 == 0:
+            print(f"❌ {name}({code}): 均量计算异常")
             return False
             
         vol_up = latest_v5 > v5.iloc[-2] if len(v5) > 1 else False
-        
-        # 【修改点】去掉 abs()，使用 raw_deviation 判定连续区间 -3% 到 +7%
         raw_deviation = (latest_v5 - latest_v60) / latest_v60
         is_binding = CFG_VOL_LOW <= raw_deviation <= CFG_VOL_HIGH
+        
+        print(f"📊 {name}({code}): 量能向上 {vol_up}, 粘合 {is_binding} (偏离度 {raw_deviation:.2%})")
         
         # --- 2. 站稳25周线（等同于125日均线）---
         # 【核心优化3】统一使用日线数据计算125日均线，解决时间锚点冲突
         if len(df_daily) < 125:
+            print(f"❌ {name}({code}): 日线数据不足125天")
             return False
         ma125 = df_daily['收盘'].rolling(125).mean().iloc[-1]
-        price_support = curr_price > ma125      
-
+        price_support = curr_price > ma125
+        print(f"🚀 {name}({code}): 125日均线 {ma125:.2f}, 价格支撑 {price_support}")
+        
         if vol_up and is_binding and price_support:
-            # 日志输出优化，展示原始偏离度
-            print(f"\n🎯 命中信号: {name}({code}) | 现价:{curr_price} | 偏离度:{raw_deviation:.2%}")
+            print(f"🎯 命中信号: {name}({code}) | 现价:{curr_price:.2f} | 偏离度:{raw_deviation:.2%}")
             return True
         return False
     except Exception as e:
-        # print(f"[异常] {name}({code}): {e}")
+        print(f"❌ {name}({code}): 异常 {str(e)}")
         return False
 
 def optimize_weekly_stars():
@@ -189,7 +199,7 @@ def main():
             enriched_list.append(f"- {stock['name']}({stock['code']}): {news_result['news']}")
             news_status.append(f"{stock['name']}({stock['code']}): {news_result['status']}")
 
-        api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+        api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
         prompt = (
             f"你是具备全球视野的首席投资官。当前北京时间 {now_str} {period_tag}。\n"
