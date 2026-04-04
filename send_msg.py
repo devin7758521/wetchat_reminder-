@@ -13,8 +13,8 @@ VERSION = "v2026.04.03.CIO.Pro" # 版本号更新以作区分
 WEB_KEY = os.environ.get("WECHAT_WEBHOOK_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
-
 def send_wechat(content):
+    """发送微信通知"""
     if not WEB_KEY:
         return
     url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEB_KEY}"
@@ -22,7 +22,6 @@ def send_wechat(content):
         requests.post(url, json={"msgtype": "text", "text": {"content": content}}, timeout=10)
     except:
         pass
-
 
 def get_stock_news(code):
     """为指定个股抓取最近3条核心新闻标题"""
@@ -35,7 +34,6 @@ def get_stock_news(code):
     except Exception as e:
         return {"status": f"❌ 新闻检索异常: {str(e)[:50]}", "news": "", "code": code}
 
-
 def check_strategy(code, name, realtime_spot_dict):
     """策略：价格(3-70) + 周线量能粘合(-3%到+7%) + 5周均量向上 + 站稳25周线"""
     # --- 调试参数区：方便你后续微调 ---
@@ -44,54 +42,71 @@ def check_strategy(code, name, realtime_spot_dict):
     # ------------------------------
     
     try:
-        # 获取日线数据（用于动态计算本周量能）
-        df_daily = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq")
+        # 【核心优化1】强制拉取800天数据，确保超过60周(300天)的最低要求
+        start_date = (datetime.now() - timedelta(days=800)).strftime('%Y%m%d')
+        df_daily = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq", start_date=start_date)
         if df_daily.empty:
             return False
         
-        # 获取周线数据（用于计算历史均量和均线）
-        df_weekly = ak.stock_zh_a_hist(symbol=code, period="weekly", adjust="qfq")
-        if len(df_weekly) < 65:
-            return False
-
         # 获取实时价格
         if code in realtime_spot_dict:
             curr_price = realtime_spot_dict[code]
         else:
             curr_price = df_daily['收盘'].iloc[-1]
 
+        # 价格过滤
         if not (3.0 <= curr_price <= 70.0):
             return False
 
-        # 动态计算周线量能指标
+        # --- 1. 动态计算周线量能指标（解决周一到周四选不出的问题）---
+        df_daily = df_daily.copy()
         df_daily['week'] = df_daily.index.to_period('W')
         weekly_volumes = df_daily.groupby('week')['成交量'].sum()
+        
+        # 【核心优化2】周化拟合：将未收盘的本周量，折算为完整的5天
+        latest_week_period = weekly_volumes.index[-1]
+        current_week_days = len(df_daily[df_daily['week'] == latest_week_period])
+        
+        if current_week_days > 0:
+            estimated_full_week_vol = weekly_volumes.iloc[-1] * (5.0 / current_week_days)
+            weekly_volumes.iloc[-1] = estimated_full_week_vol
+            
         latest_weekly_data = weekly_volumes.tail(65) 
         
+        # 确保有足够数据计算60周均量
+        if len(latest_weekly_data) < 61: 
+            return False
+
         v5 = latest_weekly_data.rolling(5).mean()
         v60 = latest_weekly_data.rolling(60).mean()
         
         latest_v5 = v5.iloc[-1]
         latest_v60 = v60.iloc[-1]
         
-        # 核心判定逻辑
+        if pd.isna(latest_v5) or pd.isna(latest_v60) or latest_v60 == 0:
+            return False
+            
         vol_up = latest_v5 > v5.iloc[-2] if len(v5) > 1 else False
         
         # 【修改点】去掉 abs()，使用 raw_deviation 判定连续区间 -3% 到 +7%
         raw_deviation = (latest_v5 - latest_v60) / latest_v60
         is_binding = CFG_VOL_LOW <= raw_deviation <= CFG_VOL_HIGH
         
-        ma25 = df_weekly['收盘'].rolling(25).mean()
-        price_support = curr_price > ma25.iloc[-1]      
+        # --- 2. 站稳25周线（等同于125日均线）---
+        # 【核心优化3】统一使用日线数据计算125日均线，解决时间锚点冲突
+        if len(df_daily) < 125:
+            return False
+        ma125 = df_daily['收盘'].rolling(125).mean().iloc[-1]
+        price_support = curr_price > ma125      
 
         if vol_up and is_binding and price_support:
             # 日志输出优化，展示原始偏离度
             print(f"\n🎯 命中信号: {name}({code}) | 现价:{curr_price} | 偏离度:{raw_deviation:.2%}")
             return True
         return False
-    except:
+    except Exception as e:
+        # print(f"[异常] {name}({code}): {e}")
         return False
-
 
 def optimize_weekly_stars():
     """周五优化分析本周四星以上股票"""
@@ -135,7 +150,6 @@ def optimize_weekly_stars():
         send_wechat(f"🌟 周五优化决策报告\n时间: {now_str}\n\n{ai_text}\n\n📊 本周四星以上标的总数: {len(weekly_stars)}")
     except Exception as e:
         send_wechat(f"❌ 周五优化AI决策异常: {str(e)[:100]}")
-
 
 def main():
     if len(sys.argv) < 2:
