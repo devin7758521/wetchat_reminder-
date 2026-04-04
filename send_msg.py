@@ -43,69 +43,46 @@ def check_strategy(code, name, realtime_spot_dict):
         print(f"🔍 开始分析 {name}({code})...")
         
         start_date = (datetime.now() - timedelta(days=800)).strftime('%Y%m%d')
-        df_daily = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq", start_date=start_date)
+        
+        # ============ 【新增】防封杀重试机制 ============
+        df_daily = pd.DataFrame()
+        for attempt in range(2):  # 最多尝试2次
+            try:
+                df_daily = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq", start_date=start_date)
+                break  # 成功就跳出循环
+            except Exception as net_err:
+                if "RemoteDisconnected" in str(net_err) or "Connection aborted" in str(net_err):
+                    print(f"⚠️ {name}({code}): 网络被断开，休息2秒后重试...")
+                    time.sleep(2)
+                else:
+                    raise net_err  # 不是断网错误，直接抛出
+        # =============================================
         
         if df_daily.empty:
             print(f"❌ {name}({code}): 获取不到历史数据")
             return False
         
-        # ============================
-        # 【核心修复】暴力统一 index 为 DatetimeIndex
-        # 不管 akshare 返回的是 RangeIndex + 日期列，还是已经是 DatetimeIndex
-        # 甚至是列名叫别的，全部兜住
-        # ============================
-        
-        # 先打印一次结构，方便排查（正式跑稳了可以删掉这行）
-        if code == "600487":  # 只对第一只报错的票打印，避免日志爆炸
-            print(f"  🔍 列名: {list(df_daily.columns)}")
-            print(f"  🔍 Index类型: {type(df_daily.index).__name__}")
-        
-        # 第一步：如果已经是 DatetimeIndex，直接用
+        # ============ 【核心修复】统一 index 为 DatetimeIndex ============
         if isinstance(df_daily.index, pd.DatetimeIndex):
-            pass  # 不用处理
-        
-        # 第二步：如果 index 不是 DatetimeIndex，去列里找日期列
+            pass
+        elif '日期' in df_daily.columns:
+            df_daily['日期'] = pd.to_datetime(df_daily['日期'])
+            df_daily = df_daily.set_index('日期')
         else:
-            date_col = None
-            # 穷举所有可能的日期列名（akshare 不同版本可能不一样）
-            for col in ['日期', '交易日期', 'trade_date', 'date', 'Date', 'DATE']:
-                if col in df_daily.columns:
-                    date_col = col
-                    break
-            
-            if date_col:
-                df_daily[date_col] = pd.to_datetime(df_daily[date_col])
-                df_daily = df_daily.set_index(date_col)
-            else:
-                # 兜底：打印所有列名，方便你告诉我实际的列名
-                print(f"⚠️ {name}({code}): 找不到日期列！现有列名={list(df_daily.columns)}")
-                # 最后挣扎：试试把 index 直接转
-                try:
-                    df_daily.index = pd.to_datetime(df_daily.index)
-                except:
-                    print(f"❌ {name}({code}): 无法转换为日期索引，跳过")
-                    return False
-        
-        # 再次确认
-        if not isinstance(df_daily.index, pd.DatetimeIndex):
-            print(f"❌ {name}({code}): index仍不是DatetimeIndex，跳过")
+            print(f"❌ {name}({code}): 找不到日期列！现有列名={list(df_daily.columns)}")
             return False
-        
-        # ============================
-        # 修复结束，下面的逻辑安全了
-        # ============================
+        # ============ 修复结束 ============
         
         # --- 价格获取 ---
         today = datetime.now().date()
-        latest_val = df_daily.index[-1]
-        latest_hist_date = latest_val.date() if hasattr(latest_val, 'date') else latest_val
+        latest_hist_date = df_daily.index[-1].date()
         
-        if code in realtime_spot_dict and str(latest_hist_date) == str(today):
+        if code in realtime_spot_dict and latest_hist_date == today:
             curr_price = realtime_spot_dict[code]
             print(f"💰 {name}({code}): 盘中实时价 {curr_price:.2f}")
         else:
             curr_price = df_daily['收盘'].iloc[-1]
-            status_msg = "休市/盘后" if str(latest_hist_date) != str(today) else "收盘价"
+            status_msg = "休市/盘后" if latest_hist_date != today else "收盘价"
             print(f"💰 {name}({code}): {status_msg} {curr_price:.2f} (截至:{latest_hist_date})")
         
         if not (3.0 <= curr_price <= 70.0):
@@ -113,14 +90,14 @@ def check_strategy(code, name, realtime_spot_dict):
             
         # --- 周化拟合 ---
         df_daily = df_daily.copy()
-        df_daily['week'] = df_daily.index.to_period('W')  # ✅ 现在安全了
+        df_daily['week'] = df_daily.index.to_period('W')
         
         weekly_volumes = df_daily.groupby('week')['成交量'].sum()
         
         latest_week_period = weekly_volumes.index[-1]
         current_week_days = len(df_daily[df_daily['week'] == latest_week_period])
         
-        is_week_incomplete = (str(latest_hist_date) == str(today)) and (today.weekday() < 4)
+        is_week_incomplete = (latest_hist_date == today) and (today.weekday() < 4)
         
         if is_week_incomplete and current_week_days > 0:
             estimated_full_week_vol = weekly_volumes.iloc[-1] * (5.0 / current_week_days)
@@ -336,6 +313,10 @@ def main():
             
             if check_strategy(stock_code, stock_name, spot_dict):
                 hits.append({"name": stock_name, "code": stock_code, "amount": row['成交额']})
+            
+            # ============ 【新增】主循环防封杀延迟 ============
+            time.sleep(0.15)  # 每只股票间隔0.15秒，完美绕过东财反爬
+            # =============================================
 
         print(f"✅ 扫描完成，找到 {len(hits)} 只符合策略的股票")
         with open(f"hits_part{part}.json", "w", encoding="utf-8") as f:
