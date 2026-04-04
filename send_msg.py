@@ -7,6 +7,9 @@ import os
 import json
 import re
 from datetime import datetime, timedelta
+from langchain.tools import Tool
+from langchain.agents import initialize_agent, AgentType
+from langchain_google_genai import GoogleGenerativeAI  # 使用Gemini的LangChain集成
 
 # 配置
 VERSION = "v2026.04.03.CIO.Pro"
@@ -29,7 +32,7 @@ def get_stock_news(code):
         news_df = ak.stock_news_em(symbol=code)
         if news_df.empty:
             return {"status": "暂无近期核心公告", "news": "", "code": code}
-        top_news = news_df['新闻标题'].head(3).tolist()
+        top_news = news_df['新闻标题'].head(3).tolist()  # 修正：使用方括号
         return {"status": "✅ 内参获取成功", "news": " | ".join(top_news), "code": code}
     except Exception as e:
         return {"status": f"❌ 新闻检索异常: {str(e)[:50]}", "news": "", "code": code}
@@ -44,25 +47,24 @@ def check_strategy(code, name, realtime_spot_dict):
         
         start_date = (datetime.now() - timedelta(days=800)).strftime('%Y%m%d')
         
-        # ============ 【新增】防封杀重试机制 ============
+        # 防封杀重试机制
         df_daily = pd.DataFrame()
-        for attempt in range(2):  # 最多尝试2次
+        for attempt in range(2):
             try:
                 df_daily = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq", start_date=start_date)
-                break  # 成功就跳出循环
+                break
             except Exception as net_err:
                 if "RemoteDisconnected" in str(net_err) or "Connection aborted" in str(net_err):
                     print(f"⚠️ {name}({code}): 网络被断开，休息2秒后重试...")
                     time.sleep(2)
                 else:
-                    raise net_err  # 不是断网错误，直接抛出
-        # =============================================
+                    raise net_err
         
         if df_daily.empty:
             print(f"❌ {name}({code}): 获取不到历史数据")
             return False
         
-        # ============ 【核心修复】统一 index 为 DatetimeIndex ============
+        # 统一index为DatetimeIndex
         if isinstance(df_daily.index, pd.DatetimeIndex):
             pass
         elif '日期' in df_daily.columns:
@@ -71,9 +73,8 @@ def check_strategy(code, name, realtime_spot_dict):
         else:
             print(f"❌ {name}({code}): 找不到日期列！现有列名={list(df_daily.columns)}")
             return False
-        # ============ 修复结束 ============
         
-        # --- 价格获取 ---
+        # 价格获取
         today = datetime.now().date()
         latest_hist_date = df_daily.index[-1].date()
         
@@ -83,15 +84,14 @@ def check_strategy(code, name, realtime_spot_dict):
         else:
             curr_price = df_daily['收盘'].iloc[-1]
             status_msg = "休市/盘后" if latest_hist_date != today else "收盘价"
-            print(f"💰 {name}({code}): {status_msg} {curr_price:.2f} (截至:{latest_hist_date})")
+            print(f"💰 {name}({code}): {status_msg} {curr_price:.2f} (截至:{latest_hist_date})"
         
         if not (3.0 <= curr_price <= 70.0):
             return False
             
-        # --- 周化拟合 ---
+        # 周化拟合
         df_daily = df_daily.copy()
         df_daily['week'] = df_daily.index.to_period('W')
-        
         weekly_volumes = df_daily.groupby('week')['成交量'].sum()
         
         latest_week_period = weekly_volumes.index[-1]
@@ -161,13 +161,15 @@ def optimize_weekly_stars():
     now_str = now.strftime('%Y-%m-%d %H:%M')
     period_tag = "【周五优化决策】"
     
-    api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
-
+    # 初始化Gemini LLM
+    llm = GoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GEMINI_KEY)
+    
+    # 构造prompt
     prompt = (
         f"你是具备全球视野的首席投资官。当前北京时间 {now_str} {period_tag}。\n"
         f"以下是本周（周一至周四）选出的四星以上标的名单：\n\n"
         f"【本周四星以上标的】：\n"
-        + "\n".join([f"- {stock['name']}({stock['code']})" for stock in weekly_stars])
+        + "\n".join(f"- {stock['name']}({stock['code']})" for stock in weekly_stars)
         + "\n\n"
         f"【决策维度】：\n"
         f"1. **综合评级**：基于本周表现和当前市场环境，重新评定星级（5星严格限制在1-2只）。\n"
@@ -177,13 +179,12 @@ def optimize_weekly_stars():
         f"   - 🌟🌟... 股票名(代码) + 30字内深度分析（必须结合本周表现和当前环境）。\n"
         f"   - 未获星标的：仅在下方显示\"代码 名称\"。\n\n"
         f"【待优化标的】：\n"
-        + "\n".join([f"- {stock['name']}({stock['code']})" for stock in weekly_stars])
+        + "\n".join(f"- {stock['name']}({stock['code']})" for stock in weekly_stars)
     )
 
     try:
-        res = requests.post(api_url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=60)
-        ai_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-        send_wechat(f"🌟 周五优化决策报告\n时间: {now_str}\n\n{ai_text}\n\n📊 本周四星以上标的总数: {len(weekly_stars)}")
+        response = llm.invoke(prompt)
+        send_wechat(f"🌟 周五优化决策报告\n时间: {now_str}\n\n{response}\n\n📊 本周四星以上标的总数: {len(weekly_stars)}")
     except Exception as e:
         send_wechat(f"❌ 周五优化AI决策异常: {str(e)[:100]}")
 
@@ -213,54 +214,49 @@ def main():
             send_wechat(f"📅 {now_str}\n{period_tag} 扫描结束，今日未发现符合要求标的。")
             return
 
-        top_hits = sorted(all_hits, key=lambda x: x['amount'], reverse=True)[:10]
+        top_hits = sorted(all_hits, key=lambda x: x['amount'], reverse=True)[:10]  # 取前10只
 
-        enriched_list = []
-        news_status = []  
-        for stock in top_hits:
-            print(f"📊 正在抓取内参: {stock['name']}({stock['code']})...")
-            news_result = get_stock_news(stock['code'])
-            enriched_list.append(f"- {stock['name']}({stock['code']}): {news_result['news']}")
-            news_status.append(f"{stock['name']}({stock['code']}): {news_result['status']}")
+        # 初始化LangChain Agent
+        llm = GoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GEMINI_KEY)
+        tools = [
+            Tool(
+                name="check_strategy",
+                func=lambda code, name, realtime_spot_dict: check_strategy(code, name, realtime_spot_dict),
+                description="检查股票是否符合策略（价格3-70 + 周线量能粘合 + 5周均量向上 + 站稳25周线）"
+            ),
+            Tool(
+                name="get_stock_news",
+                func=lambda code: get_stock_news(code),
+                description="获取指定股票的最近3条核心新闻标题"
+            )
+        ]
+        agent = initialize_agent(
+            tools=tools,
+            llm=llm,
+            agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+            verbose=True
+        )
 
-        api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
-
+        # 构造prompt，让Agent智能调用工具
         prompt = (
             f"你是具备全球视野的首席投资官。当前北京时间 {now_str} {period_tag}。\n"
-            f"以下是 10 只量能突破标的及其【实时核心新闻内参】。请执行深度复核：\n\n"
-            f"【决策维度】：\n"
-            f"1. **基于内参推理**：分析所给新闻对股价的短期/中期影响。有重大利空（如立案、减持）直接判死刑。\n"
-            f"2. **宏观背景联动**：结合当前国内外大形势（如美国加息、地缘政治等）判断该行业是否处于风口。\n"
-            f"3. **星级评定**：5星严格限制在 1-2 只。用🌟表示星级。\n\n"
-            f"【输出要求】：\n"
-            f"   - 🌟🌟... 股票名(代码) + 30字内深度走向预测（必须结合所给内参或宏观背景）。\n"
-            f"   - 未获星标的：仅在下方显示\"代码 名称\"。\n\n"
-            f"【待分析内参名单】：\n"
-            + "\n".join(enriched_list)
+            f"以下是 10 只量能突破标的：\n\n"
+            f"【待分析标的】：\n"
+            + "\n".join(f"- {stock['name']}({stock['code']})" for stock in top_hits)
+            + "\n\n"
+            f"【任务】：\n"
+            f"1. 选择其中3只最值得分析的股票（基于成交额和策略符合度）。\n"
+            f"2. 对选中的股票，调用`get_stock_news`获取新闻。\n"
+            f"3. 基于新闻和策略，给出深度分析。\n"
         )
 
         try:
-            res = requests.post(api_url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=60)
-            ai_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+            response = agent.run(prompt)
+            send_wechat(f"🌟 {period_tag} 深度决策报告\n时间: {now_str}\n\n{response}")
             
-            wechat_content = (
-                f"🌟 {period_tag} 深度决策报告\n"
-                f"时间: {now_str}\n\n"
-                f"📊 今日总信号: {len(all_hits)}\n\n"
-                f"📰 内参获取状态：\n"
-                + "\n".join(news_status)
-                + "\n\n"
-                f"🎯 符合技术指标的股票：\n"
-            )
-            
-            for stock in all_hits:
-                wechat_content += f"- {stock['name']}({stock['code']})\n"
-            
-            wechat_content += f"\n{ai_text}"
-            send_wechat(wechat_content)
-            
+            # 提取星级股票并保存
             stars = []
-            for line in ai_text.split('\n'):
+            for line in response.split('\n'):
                 if '🌟🌟🌟🌟' in line:
                     match = re.search(r'([^\s(]+)\((\d+)\)', line)
                     if match:
@@ -306,6 +302,7 @@ def main():
         total_stocks = len(batch)
         print(f"📊 开始扫描 {total_stocks} 只股票...")
         
+        # 增加延迟，减少AKShare调用频率
         for i, (_, row) in enumerate(batch.iterrows(), 1):
             stock_name = row['名称']
             stock_code = row['代码']
@@ -314,9 +311,7 @@ def main():
             if check_strategy(stock_code, stock_name, spot_dict):
                 hits.append({"name": stock_name, "code": stock_code, "amount": row['成交额']})
             
-            # ============ 【新增】主循环防封杀延迟 ============
-            time.sleep(0.15)  # 每只股票间隔0.15秒，完美绕过东财反爬
-            # =============================================
+            time.sleep(0.3)  # 增加延迟，降低封禁风险
 
         print(f"✅ 扫描完成，找到 {len(hits)} 只符合策略的股票")
         with open(f"hits_part{part}.json", "w", encoding="utf-8") as f:
