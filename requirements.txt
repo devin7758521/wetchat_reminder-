@@ -1,5 +1,5 @@
-  akshare
-  langchain-google-genai
-  pandas
-  requests
-  
+pandas
+requests
+akshare
+pytdx
+baostock
