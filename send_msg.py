@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timedelta
 
 # 配置
-VERSION = "v2026.04.03.CIO.Pro" # 版本号更新以作区分
+VERSION = "v2026.04.03.CIO.Pro"
 WEB_KEY = os.environ.get("WECHAT_WEBHOOK_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
@@ -36,51 +36,103 @@ def get_stock_news(code):
 
 def check_strategy(code, name, realtime_spot_dict):
     """策略：价格(3-70) + 周线量能粘合(-3%到+7%) + 5周均量向上 + 站稳25周线"""
-    # --- 调试参数区：方便你后续微调 ---
-    CFG_VOL_LOW = -0.03   # 5周线在60周线下方的容忍度 (-3%)
-    CFG_VOL_HIGH = 0.07   # 5周线在60周线上方的突破限值 (+7%)
-    # ------------------------------
+    CFG_VOL_LOW = -0.03
+    CFG_VOL_HIGH = 0.07
     
     try:
         print(f"🔍 开始分析 {name}({code})...")
         
-        # 【核心优化1】强制拉取800天数据，确保超过60周(300天)的最低要求
         start_date = (datetime.now() - timedelta(days=800)).strftime('%Y%m%d')
         df_daily = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq", start_date=start_date)
+        
         if df_daily.empty:
-            print(f"❌ {name}({code}): 日线数据为空")
+            print(f"❌ {name}({code}): 获取不到历史数据")
             return False
         
-        # 获取实时价格
-        if code in realtime_spot_dict:
+        # ============================
+        # 【核心修复】暴力统一 index 为 DatetimeIndex
+        # 不管 akshare 返回的是 RangeIndex + 日期列，还是已经是 DatetimeIndex
+        # 甚至是列名叫别的，全部兜住
+        # ============================
+        
+        # 先打印一次结构，方便排查（正式跑稳了可以删掉这行）
+        if code == "600487":  # 只对第一只报错的票打印，避免日志爆炸
+            print(f"  🔍 列名: {list(df_daily.columns)}")
+            print(f"  🔍 Index类型: {type(df_daily.index).__name__}")
+        
+        # 第一步：如果已经是 DatetimeIndex，直接用
+        if isinstance(df_daily.index, pd.DatetimeIndex):
+            pass  # 不用处理
+        
+        # 第二步：如果 index 不是 DatetimeIndex，去列里找日期列
+        else:
+            date_col = None
+            # 穷举所有可能的日期列名（akshare 不同版本可能不一样）
+            for col in ['日期', '交易日期', 'trade_date', 'date', 'Date', 'DATE']:
+                if col in df_daily.columns:
+                    date_col = col
+                    break
+            
+            if date_col:
+                df_daily[date_col] = pd.to_datetime(df_daily[date_col])
+                df_daily = df_daily.set_index(date_col)
+            else:
+                # 兜底：打印所有列名，方便你告诉我实际的列名
+                print(f"⚠️ {name}({code}): 找不到日期列！现有列名={list(df_daily.columns)}")
+                # 最后挣扎：试试把 index 直接转
+                try:
+                    df_daily.index = pd.to_datetime(df_daily.index)
+                except:
+                    print(f"❌ {name}({code}): 无法转换为日期索引，跳过")
+                    return False
+        
+        # 再次确认
+        if not isinstance(df_daily.index, pd.DatetimeIndex):
+            print(f"❌ {name}({code}): index仍不是DatetimeIndex，跳过")
+            return False
+        
+        # ============================
+        # 修复结束，下面的逻辑安全了
+        # ============================
+        
+        # --- 价格获取 ---
+        today = datetime.now().date()
+        latest_val = df_daily.index[-1]
+        latest_hist_date = latest_val.date() if hasattr(latest_val, 'date') else latest_val
+        
+        if code in realtime_spot_dict and str(latest_hist_date) == str(today):
             curr_price = realtime_spot_dict[code]
+            print(f"💰 {name}({code}): 盘中实时价 {curr_price:.2f}")
         else:
             curr_price = df_daily['收盘'].iloc[-1]
-        print(f"💰 {name}({code}): 实时价格 {curr_price:.2f}")
+            status_msg = "休市/盘后" if str(latest_hist_date) != str(today) else "收盘价"
+            print(f"💰 {name}({code}): {status_msg} {curr_price:.2f} (截至:{latest_hist_date})")
         
-        # 价格过滤
         if not (3.0 <= curr_price <= 70.0):
-            print(f"❌ {name}({code}): 价格不在3-70区间")
             return False
             
-        # --- 1. 动态计算周线量能指标（解决周一到周四选不出的问题）---
+        # --- 周化拟合 ---
         df_daily = df_daily.copy()
-        df_daily['week'] = df_daily.index.to_period('W')
+        df_daily['week'] = df_daily.index.to_period('W')  # ✅ 现在安全了
+        
         weekly_volumes = df_daily.groupby('week')['成交量'].sum()
         
-        # 【核心优化2】周化拟合：将未收盘的本周量，折算为完整的5天
         latest_week_period = weekly_volumes.index[-1]
         current_week_days = len(df_daily[df_daily['week'] == latest_week_period])
         
-        if current_week_days > 0:
+        is_week_incomplete = (str(latest_hist_date) == str(today)) and (today.weekday() < 4)
+        
+        if is_week_incomplete and current_week_days > 0:
             estimated_full_week_vol = weekly_volumes.iloc[-1] * (5.0 / current_week_days)
             weekly_volumes.iloc[-1] = estimated_full_week_vol
-            print(f"📊 {name}({code}): 本周{current_week_days}天数据，周化拟合完成")
+            print(f"📊 {name}({code}): 本周进行中({current_week_days}天)，执行周化拟合")
+        else:
+            print(f"📊 {name}({code}): 真实周量({current_week_days}天)")
             
-        latest_weekly_data = weekly_volumes.tail(65)
+        latest_weekly_data = weekly_volumes.tail(65) 
         
         if len(latest_weekly_data) < 61:
-            print(f"❌ {name}({code}): 周线数据不足61周，只有 {len(latest_weekly_data)} 周")
+            print(f"❌ {name}({code}): 周线不足61周")
             return False
 
         v5 = latest_weekly_data.rolling(5).mean()
@@ -88,8 +140,6 @@ def check_strategy(code, name, realtime_spot_dict):
         
         latest_v5 = v5.iloc[-1]
         latest_v60 = v60.iloc[-1]
-        
-        print(f"📈 {name}({code}): 5周均量 {latest_v5:.2f}, 60周均量 {latest_v60:.2f}")
         
         if pd.isna(latest_v5) or pd.isna(latest_v60) or latest_v60 == 0:
             print(f"❌ {name}({code}): 均量计算异常")
@@ -99,23 +149,22 @@ def check_strategy(code, name, realtime_spot_dict):
         raw_deviation = (latest_v5 - latest_v60) / latest_v60
         is_binding = CFG_VOL_LOW <= raw_deviation <= CFG_VOL_HIGH
         
-        print(f"📊 {name}({code}): 量能向上 {vol_up}, 粘合 {is_binding} (偏离度 {raw_deviation:.2%})")
+        print(f"📈 {name}({code}): 量能向上:{vol_up}, 粘合:{is_binding} (偏离度:{raw_deviation:.2%})")
         
-        # --- 2. 站稳25周线（等同于125日均线）---
-        # 【核心优化3】统一使用日线数据计算125日均线，解决时间锚点冲突
         if len(df_daily) < 125:
-            print(f"❌ {name}({code}): 日线数据不足125天")
+            print(f"❌ {name}({code}): 日线不足125天")
             return False
+            
         ma125 = df_daily['收盘'].rolling(125).mean().iloc[-1]
         price_support = curr_price > ma125
-        print(f"🚀 {name}({code}): 125日均线 {ma125:.2f}, 价格支撑 {price_support}")
+        print(f"🚀 {name}({code}): 125均线:{ma125:.2f}, 站稳:{price_support}")
         
         if vol_up and is_binding and price_support:
             print(f"🎯 命中信号: {name}({code}) | 现价:{curr_price:.2f} | 偏离度:{raw_deviation:.2%}")
             return True
         return False
     except Exception as e:
-        print(f"❌ {name}({code}): 异常 {str(e)}")
+        print(f"❌ {name}({code}): 异常 -> {str(e)}")
         return False
 
 def optimize_weekly_stars():
@@ -169,12 +218,10 @@ def main():
     now_str = now.strftime('%Y-%m-%d %H:%M')
     period_tag = "【早盘观察】" if now.hour < 12 else "【尾盘决策】"
 
-    # 周一启动时清空weekly_stars.json
-    if mode == "1" and now.weekday() == 0:  # 周一
+    if mode == "1" and now.weekday() == 0:
         if os.path.exists("weekly_stars.json"):
             os.remove("weekly_stars.json")
 
-    # --- 启动通知 ---
     if mode == "1":
         send_wechat(f"📢 机器人启动通知\n时间: {now_str}\n任务: {period_tag} 扫描开始...")
 
@@ -199,7 +246,7 @@ def main():
             enriched_list.append(f"- {stock['name']}({stock['code']}): {news_result['news']}")
             news_status.append(f"{stock['name']}({stock['code']}): {news_result['status']}")
 
-        api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
 
         prompt = (
             f"你是具备全球视野的首席投资官。当前北京时间 {now_str} {period_tag}。\n"
@@ -257,7 +304,7 @@ def main():
                 with open("weekly_stars.json", "w", encoding="utf-8") as f:
                     json.dump(existing_stars, f, indent=2, ensure_ascii=False)
             
-            if now.weekday() == 4:  # 周五
+            if now.weekday() == 4:
                 optimize_weekly_stars()
                 
         except Exception as e:
