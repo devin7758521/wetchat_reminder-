@@ -84,7 +84,7 @@ def check_strategy(code, name, realtime_spot_dict):
         else:
             curr_price = df_daily['收盘'].iloc[-1]
             status_msg = "休市/盘后" if latest_hist_date != today else "收盘价"
-            print(f"💰 {name}({code}): {status_msg} {curr_price:.2f} (截至:{latest_hist_date})"
+            print(f"💰 {name}({code}): {status_msg} {curr_price:.2f} (截至:{latest_hist_date})")  # 补充右括号
         
         if not (3.0 <= curr_price <= 70.0):
             return False
