@@ -7,123 +7,86 @@ import os
 import json
 import re
 from datetime import datetime, timedelta
-from pytdx.hq import TdxHq_API
-import baostock as bs
 
 # ==================== 配置 ====================
 VERSION = "v2026.04.03.CIO.Pro"
 WEB_KEY = os.environ.get("WECHAT_WEBHOOK_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
-# 初始化 BaoStock（历史K线用，不限IP）
-bs.login()
+# ==================== 网络防护：绕过 WAF 拦截 ====================
+# akshare 底层就是请求东财，但它的 Session 特征容易被 WAF 拦截。
+# 我们直接用 requests + 浏览器 UA 请求东财原始接口，完美绕过。
 
-# ==================== 数据源伪装层（彻底解决IP封禁） ====================
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://quote.eastmoney.com/"
+}
+
+
+def safe_req(url, desc="req"):
+    """带重试的 requests.GET"""
+    for attempt in range(1, 4):
+        try:
+            res = requests.get(url, headers=HEADERS, timeout=15)
+            res.raise_for_status()
+            return res
+        except Exception as e:
+            if attempt < 3:
+                wait = 3 * (2 ** (attempt - 1))
+                print(f"⚠️ [{desc}] 第{attempt}次失败，{wait}秒后重试... ({str(e)[:50]})")
+                time.sleep(wait)
+            else:
+                print(f"❌ [{desc}] 重试耗尽: {str(e)[:80]}")
+                return None
+
 
 def get_spot_data():
-    """用 pytdx(通达信) 替代 ak.stock_zh_a_spot_em，返回格式完全一致"""
-    api = TdxHq_API()
-    servers = [
-        ('119.147.212.81', 7709), ('112.74.214.43', 7721),
-        ('221.231.141.60', 7709), ('101.227.73.20', 7709),
-        ('101.227.77.254', 7709)
-    ]
-    
-    connected = False
-    for ip, port in servers:
-        try:
-            if api.connect(ip, port):
-                connected = True
-                break
-        except:
-            continue
-            
-    if not connected:
+    """直接请求东财 JSON 接口获取全市场行情，替代 ak.stock_zh_a_spot_em"""
+    url = "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=10000&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f2,f6"
+    res = safe_req(url, desc="全市场行情")
+    if not res:
         return pd.DataFrame()
-        
-    stocks = []
-    # 拉取沪市列表，只要60开头的
-    for start in range(0, 3000, 1000):
-        res = api.get_security_list(0, start)
-        if not res: break
-        for item in api.to_df(res).to_dict('records'):
-            if item['code'].startswith('60'):
-                stocks.append((0, item['code']))
-                
-    # 拉取深市列表，只要00开头的
-    for start in range(0, 4000, 1000):
-        res = api.get_security_list(1, start)
-        if not res: break
-        for item in api.to_df(res).to_dict('records'):
-            if item['code'].startswith('00'):
-                stocks.append((1, item['code']))
-                
-    # 批量获取实时行情（每次最多80只，极快不封IP）
-    all_data = []
-    for i in range(0, len(stocks), 80):
-        batch = stocks[i:i+80]
-        res = api.get_security_quotes(batch)
-        if res:
-            all_data.extend(api.to_df(res).to_dict('records'))
-            
-    api.disconnect()
-    
-    if not all_data:
+
+    data = res.json().get('data')
+    if not data or not data.get('diff'):
         return pd.DataFrame()
-        
-    df = pd.DataFrame(all_data)
-    # 核心：列名伪装成 AKShare 的格式
-    df = df.rename(columns={
-        'code': '代码',
-        'securty_name': '名称',
-        'price': '最新价',
-        'amount': '成交额',
-    })
-    
-    df = df[['代码', '名称', '最新价', '成交额']].copy()
+
+    df = pd.DataFrame(data['diff'])[['f12', 'f14', 'f2', 'f6']]
+    df.columns = ['代码', '名称', '最新价', '成交额']
     df['代码'] = df['代码'].astype(str)
     df['最新价'] = pd.to_numeric(df['最新价'], errors='coerce')
     df['成交额'] = pd.to_numeric(df['成交额'], errors='coerce')
-    
-    # 去除停牌的
+    # 去除停牌
     df = df[df['最新价'] > 0]
     return df
 
 
 def get_hist_data(code, start_date):
-    """用 baostock 替代 ak.stock_zh_a_hist，返回前复权格式完全一致"""
-    bs_code = f"sh.{code}" if code.startswith('6') else f"sz.{code}"
-    
-    rs = bs.query_history_k_data_plus(
-        bs_code,
-        "date,close,volume",
-        start_date=start_date,
-        frequency="d",
-        adjustflag="2"  # 2=前复权（和原代码 qfq 一致）
-    )
-    
-    data_list = []
-    while rs.next():
-        data_list.append(rs.get_row_data())
-        
-    if not data_list:
+    """直接请求东财 JSON 接口获取前复权K线，替代 ak.stock_zh_a_hist"""
+    market = 1 if code.startswith('0') else 0
+    url = f"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={market}.{code}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&beg={start_date}&end=20500101&lmt=800"
+    res = safe_req(url, desc=f"K线-{code}")
+    if not res:
         return None
-        
-    df = pd.DataFrame(data_list, columns=['日期', '收盘', '成交量'])
-    
+
+    data = res.json().get('data')
+    if not data or not data.get('klines'):
+        return None
+
+    df = pd.DataFrame([k.split(',') for k in data['klines']],
+                      columns=['日期', '开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌幅', '涨跌额', '换手率'])
     df['日期'] = pd.to_datetime(df['日期'])
     df['收盘'] = pd.to_numeric(df['收盘'], errors='coerce')
     df['成交量'] = pd.to_numeric(df['成交量'], errors='coerce')
-    
+
     df = df.dropna(subset=['收盘', '成交量'])
     df = df[df['成交量'] > 0]
-    
     if df.empty:
         return None
-        
-    # 核心：伪装成 AKShare 处理后的格式（DatetimeIndex）
+
     df = df.set_index('日期')
-    return df
+    # 只返回原代码用到的列，格式和 akshare 完全一致
+    return df[['收盘', '成交量']]
 
 
 # ==================== 以下业务逻辑完全不动 ====================
@@ -161,14 +124,14 @@ def check_strategy(code, name, realtime_spot_dict):
 
         start_date = (datetime.now() - timedelta(days=800)).strftime('%Y%m%d')
 
-        # 【唯一改动】换成 baostock 数据源
+        # 【改动点】换成原生 requests 请求东财接口
         df_daily = get_hist_data(code, start_date)
-        
+
         if df_daily is None or df_daily.empty:
             print(f"❌ {name}({code}): 获取不到历史数据")
             return False
 
-        # 统一 index 为 DatetimeIndex（baostock返回的直接就是，原逻辑直接通过）
+        # 统一 index 为 DatetimeIndex
         if isinstance(df_daily.index, pd.DatetimeIndex):
             pass
         elif '日期' in df_daily.columns:
@@ -397,7 +360,7 @@ def main():
     else:
         part = int(mode)
 
-        # 【唯一改动】换成 pytdx 数据源
+        # 【改动点】换成原生 requests 请求东财接口
         df = get_spot_data()
         if df is None or df.empty:
             print("❌ 获取全市场行情失败，任务终止")
