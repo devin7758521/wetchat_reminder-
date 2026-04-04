@@ -1,4 +1,5 @@
-google-genai
-requests
-pandas
-akshare
+  akshare
+  langchain-google-genai
+  pandas
+  requests
+  
