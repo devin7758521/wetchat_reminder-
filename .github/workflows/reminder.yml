@@ -19,19 +19,19 @@ jobs:
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python send_msg.py 1
+        run: python stock_scanner.py 1
 
       - name: Run Stock Scan Part 2
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python send_msg.py 2
+        run: python stock_scanner.py 2
 
       - name: Run AI Summary
         env:
           WECHAT_WEBHOOK_KEY: ${{ secrets.WECHAT_WEBHOOK_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python send_msg.py summary
+        run: python stock_scanner.py summary
 
   etf_job:
     runs-on: ubuntu-latest
