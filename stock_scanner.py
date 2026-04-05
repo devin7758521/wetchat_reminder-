@@ -19,7 +19,7 @@ import akshare as ak  # 仅用于抓新闻（东财新闻接口未被封）
 
 # ============================
 
-VERSION    = “v2026.04.05.CIO.Pro”
+VERSION    = "v2026.04.05.CIO.Pro"
 WEB_KEY    = os.environ.get(“WECHAT_WEBHOOK_KEY”)
 GEMINI_KEY = os.environ.get(“GEMINI_API_KEY”)
 
