@@ -213,7 +213,7 @@ def check_strategy(code, name, spot_dict):
     CFG_VOL_HIGH =  0.07
 
     try:
-        print(f"🔍 分析 {name}({code})...")
+        print(f"🔍 开始分析 {name}({code})...")
 
         curr_price = spot_dict.get(code, 0)
         if curr_price == 0:
@@ -225,10 +225,17 @@ def check_strategy(code, name, spot_dict):
             return False
 
         start_date = (datetime.now() - timedelta(days=800)).strftime('%Y-%m-%d')
+        
+        # 标明正在向BaoStock请求该股票数据
+        print(f"📡 [网络请求中] 正在获取 {name}({code}) {start_date} 至今的历史K线...")
         df_daily = get_hist_data(code, start_date)
+        
+        # 标明数据已返回
+        data_len = len(df_daily) if df_daily is not None else 0
+        print(f"📡 [数据返回] {name}({code}) K线获取完毕，有效数据量: {data_len} 天")
 
         if df_daily is None or df_daily.empty:
-            print(f"❌ {name}({code}): 历史数据获取失败，跳过")
+            print(f"❌ {name}({code}): 获取不到历史数据")
             return False
 
         if len(df_daily) < 125:
@@ -293,7 +300,7 @@ def optimize_weekly_stars():
 
     now     = datetime.now()
     now_str = now.strftime('%Y-%m-%d %H:%M')
-    api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+    api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
     prompt = (
         f"你是具备全球视野的首席投资官。当前北京时间 {now_str} 【周五优化决策】。\n"
@@ -337,7 +344,7 @@ def main():
     now_str    = now.strftime('%Y-%m-%d %H:%M')
     period_tag = "【早盘观察】" if now.hour < 12 else "【尾盘决策】"
 
-    # 进度/网络状态：启动时先检测网络连通性（用轻量 HEAD 请求）
+    # 启动时检测网络连通性
     net_ok = False
     net_msg = ""
     try:
@@ -352,7 +359,6 @@ def main():
     else:
         print(f"⚠️ {net_msg} → 网络异常，请检查连接")
 
-    # 如有 WEB_KEY，把网络状态也推送到微信（方便远程观测）
     if WEB_KEY:
         send_wechat(f"🚀 机器人启动\n时间: {now_str}\n任务: {period_tag}\n{net_msg}")
 
@@ -390,7 +396,7 @@ def main():
             news_status.append(f"{stock['name']}({stock['code']}): {news_result['status']}")
             time.sleep(0.5)
 
-        api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+        api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         prompt  = (
             f"你是具备全球视野的首席投资官。当前北京时间 {now_str} {period_tag}。\n"
             f"以下是 10 只量能突破标的及其【实时核心新闻内参】。请执行深度复核：\n\n"
@@ -491,9 +497,8 @@ def main():
             for i, (_, row) in enumerate(batch.iterrows(), 1):
                 stock_name = row['name']
                 stock_code = str(row['code'])
-                print(f"\n🔄 [{i}/{total}] {stock_name}({stock_code})")
-
-                # 进度/网络状态：打印进度与预计剩余时间
+                
+                # 清晰的进度显示
                 pct = i / total
                 elapsed = time.time() - t_start
                 if i > 1:
@@ -501,10 +506,12 @@ def main():
                     eta = avg * (total - i)
                     eta_str = f"预计剩余约 {eta:.0f} 秒" if eta < 3600 else f"预计剩余约 {eta/60:.1f} 分钟"
                 else:
-                    avg = 0
-                    eta = 0
                     eta_str = "（计算中）"
-                print(f"   进度: {pct:.1%} | 已耗时 {elapsed:.0f} 秒 | {eta_str}")
+
+                print(f"\n{'='*50}")
+                print(f"🔄 正在扫描 {i}/{total}: {stock_name}({stock_code}) | 进度: {pct:.1%} | {eta_str}")
+                print(f"{'='*50}")
+                print(f"🔍 开始分析 {stock_name}({stock_code})...")
 
                 if check_strategy(stock_code, stock_name, spot_dict):
                     hits.append({
