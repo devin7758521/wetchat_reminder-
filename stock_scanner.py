@@ -337,6 +337,25 @@ def main():
     now_str    = now.strftime('%Y-%m-%d %H:%M')
     period_tag = "【早盘观察】" if now.hour < 12 else "【尾盘决策】"
 
+    # 进度/网络状态：启动时先检测网络连通性（用轻量 HEAD 请求）
+    net_ok = False
+    net_msg = ""
+    try:
+        r = requests.head("https://www.baidu.com", timeout=5, verify=False)
+        net_ok = r.status_code in (200, 301, 302, 303, 307, 308)
+        net_msg = f"网络连通性检测：状态码={r.status_code}"
+    except Exception as e:
+        net_msg = f"网络连通性检测失败（可能是离线或DNS问题）：{str(e)[:100]}"
+
+    if net_ok:
+        print(f"🌐 {net_msg} → 网络正常")
+    else:
+        print(f"⚠️ {net_msg} → 网络异常，请检查连接")
+
+    # 如有 WEB_KEY，把网络状态也推送到微信（方便远程观测）
+    if WEB_KEY:
+        send_wechat(f"🚀 机器人启动\n时间: {now_str}\n任务: {period_tag}\n{net_msg}")
+
     # 周一清空上周四星记录
     if mode == "1" and now.weekday() == 0:
         if os.path.exists("weekly_stars.json"):
@@ -467,10 +486,25 @@ def main():
             total = len(batch)
             print(f"📊 开始扫描 {total} 只股票...")
 
+            t_start = time.time()
+
             for i, (_, row) in enumerate(batch.iterrows(), 1):
                 stock_name = row['name']
                 stock_code = str(row['code'])
                 print(f"\n🔄 [{i}/{total}] {stock_name}({stock_code})")
+
+                # 进度/网络状态：打印进度与预计剩余时间
+                pct = i / total
+                elapsed = time.time() - t_start
+                if i > 1:
+                    avg = elapsed / i
+                    eta = avg * (total - i)
+                    eta_str = f"预计剩余约 {eta:.0f} 秒" if eta < 3600 else f"预计剩余约 {eta/60:.1f} 分钟"
+                else:
+                    avg = 0
+                    eta = 0
+                    eta_str = "（计算中）"
+                print(f"   进度: {pct:.1%} | 已耗时 {elapsed:.0f} 秒 | {eta_str}")
 
                 if check_strategy(stock_code, stock_name, spot_dict):
                     hits.append({
