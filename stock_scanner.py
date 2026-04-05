@@ -457,14 +457,23 @@ def main():
     else:
         part = int(mode)
 
-        # BaoStock登录
-        lg = bs.login()
-        if lg.error_code != '0':
-            msg = f"❌ BaoStock登录失败: {lg.error_msg}"
-            print(msg)
-            send_wechat(msg)
-            return
-        print("✅ BaoStock登录成功")
+        # BaoStock登录 - 优化：强制超时和错误处理
+print("🔑 尝试登录BaoStock...")
+try:
+    # 设置全局超时（间接控制BaoStock的等待时间）
+    requests.adapters.DEFAULT_TIMEOUT = 10  # 10秒超时
+    lg = bs.login()
+    if lg.error_code != '0':
+        error_msg = f"❌ BaoStock登录失败: {lg.error_msg}"
+        print(error_msg)
+        send_wechat(error_msg)
+        sys.exit(1)  # 强制终止任务
+    print("✅ BaoStock登录成功")
+except Exception as e:
+    error_msg = f"❌ BaoStock登录异常: {str(e)}"
+    print(error_msg)
+    send_wechat(error_msg)
+    sys.exit(1)  # 强制终止任务
 
         try:
             result = get_all_stocks_quote()
