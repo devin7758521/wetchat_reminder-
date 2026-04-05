@@ -20,8 +20,8 @@ import akshare as ak  # 仅用于抓新闻（东财新闻接口未被封）
 # ============================
 
 VERSION    = "v2026.04.05.CIO.Pro"
-WEB_KEY    = os.environ.get(“WECHAT_WEBHOOK_KEY”)
-GEMINI_KEY = os.environ.get(“GEMINI_API_KEY”)
+WEB_KEY    = os.environ.get("WECHAT_WEBHOOK_KEY")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
 # ============================
 
@@ -32,11 +32,11 @@ GEMINI_KEY = os.environ.get(“GEMINI_API_KEY”)
 def send_wechat(content):
 if not WEB_KEY:
 return
-url = f”https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEB_KEY}”
+url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEB_KEY}"
 try:
-requests.post(url, json={“msgtype”: “text”, “text”: {“content”: content}}, timeout=15)
+requests.post(url, json={"msgtype": "text", "text": {"content": content}}, timeout=15)
 except Exception as e:
-print(f”⚠️  微信发送失败: {e}”)
+print(f"⚠️  微信发送失败: {e}")
 
 # ============================
 
@@ -50,13 +50,13 @@ print(f”⚠️  微信发送失败: {e}”)
 
 def to_bs_code(code):
 code = str(code).zfill(6)
-if code.startswith(‘6’):
-return f”sh.{code}”
+if code.startswith('6'):
+return f"sh.{code}"
 else:
-return f”sz.{code}”
+return f"sz.{code}"
 
 def from_bs_code(bs_code):
-return bs_code.split(’.’)[1]
+return bs_code.split('.')[1]
 
 # ============================
 
@@ -67,14 +67,12 @@ return bs_code.split(’.’)[1]
 # ============================
 
 def get_all_stocks_quote():
-“””
+"""
 获取全市场主板股票最新收盘价和成交额
 返回 DataFrame，列：code, name, close, amount
-“””
-print(“📡 BaoStock 获取全市场收盘行情…”)
+"""
+print("📡 BaoStock 获取全市场收盘行情...")
 
-```
-# 获取最近交易日
 today = datetime.now().strftime('%Y-%m-%d')
 rs = bs.query_trade_dates(start_date=(datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d'),
                            end_date=today)
@@ -148,7 +146,6 @@ for i, bs_code in enumerate(codes, 1):
 df_result = pd.DataFrame(results)
 print(f"✅ 收盘行情获取完成，有效股票 {len(df_result)} 只")
 return df_result, last_trade_date
-```
 
 # ============================
 
@@ -159,24 +156,23 @@ return df_result, last_trade_date
 # ============================
 
 def get_hist_data(code, start_date):
-“””
+"""
 获取个股复权日线数据
 返回 DataFrame，index为DatetimeIndex，列含：收盘、成交量
-“””
+"""
 bs_code = to_bs_code(code)
 rs = bs.query_history_k_data_plus(
 bs_code,
-“date,close,volume”,
+"date,close,volume",
 start_date=start_date,
-end_date=datetime.now().strftime(’%Y-%m-%d’),
-frequency=“d”,
-adjustflag=“2”  # 前复权
+end_date=datetime.now().strftime('%Y-%m-%d'),
+frequency="d",
+adjustflag="2"  # 前复权
 )
 data = []
-while rs.error_code == ‘0’ and rs.next():
+while rs.error_code == '0' and rs.next():
 data.append(rs.get_row_data())
 
-```
 if not data:
     return None
 
@@ -186,7 +182,6 @@ df['收盘']  = pd.to_numeric(df['收盘'],  errors='coerce')
 df['成交量'] = pd.to_numeric(df['成交量'], errors='coerce')
 df = df.dropna().set_index('日期')
 return df
-```
 
 # ============================
 
@@ -198,11 +193,11 @@ def get_stock_news(code):
 try:
 news_df = ak.stock_news_em(symbol=code)
 if news_df is None or news_df.empty:
-return {“status”: “暂无近期核心公告”, “news”: “”, “code”: code}
-top_news = news_df[‘新闻标题’].head(3).tolist()
-return {“status”: “✅ 内参获取成功”, “news”: “ | “.join(top_news), “code”: code}
+return {"status": "暂无近期核心公告", "news": "", "code": code}
+top_news = news_df['新闻标题'].head(3).tolist()
+return {"status": "✅ 内参获取成功", "news": " | ".join(top_news), "code": code}
 except Exception as e:
-return {“status”: f”❌ 新闻检索异常: {str(e)[:50]}”, “news”: “”, “code”: code}
+return {"status": f"❌ 新闻检索异常: {str(e)[:50]}", "news": "", "code": code}
 
 # ============================
 
@@ -211,13 +206,12 @@ return {“status”: f”❌ 新闻检索异常: {str(e)[:50]}”, “news”: 
 # ============================
 
 def check_strategy(code, name, spot_dict):
-“””
+"""
 策略：价格(3-70) + 周线量能粘合(-3%~+7%) + 5周均量向上 + 站稳125日均线
-“””
+"""
 CFG_VOL_LOW  = -0.03
 CFG_VOL_HIGH =  0.07
 
-```
 try:
     print(f"🔍 分析 {name}({code})...")
 
@@ -278,7 +272,6 @@ try:
 except Exception as e:
     print(f"❌ {name}({code}): 异常 -> {str(e)}")
     return False
-```
 
 # ============================
 
@@ -287,11 +280,10 @@ except Exception as e:
 # ============================
 
 def optimize_weekly_stars():
-if not os.path.exists(“weekly_stars.json”):
-send_wechat(“📅 周五优化：本周无四星以上股票记录。”)
+if not os.path.exists("weekly_stars.json"):
+send_wechat("📅 周五优化：本周无四星以上股票记录。")
 return
 
-```
 with open("weekly_stars.json", "r", encoding="utf-8") as f:
     weekly_stars = json.load(f)
 
@@ -328,7 +320,6 @@ try:
     )
 except Exception as e:
     send_wechat(f"❌ 周五优化AI决策异常: {str(e)[:100]}")
-```
 
 # ============================
 
@@ -338,10 +329,9 @@ except Exception as e:
 
 def main():
 if len(sys.argv) < 2:
-print(“用法: python stock_scanner.py [1|2|summary]”)
+print("用法: python stock_scanner.py [1|2|summary]")
 return
 
-```
 mode       = sys.argv[1]
 now        = datetime.now()
 now_str    = now.strftime('%Y-%m-%d %H:%M')
@@ -502,7 +492,6 @@ else:
     finally:
         bs.logout()
         print("👋 BaoStock已登出")
-```
 
-if **name** == “**main**”:
+if __name__ == "__main__":
 main()
