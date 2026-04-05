@@ -1,4 +1,6 @@
 pandas
 requests
 akshare
+baostock
+urllib3
 
