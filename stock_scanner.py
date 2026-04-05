@@ -30,13 +30,13 @@ GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 # ============================
 
 def send_wechat(content):
-if not WEB_KEY:
-return
-url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEB_KEY}"
-try:
-requests.post(url, json={"msgtype": "text", "text": {"content": content}}, timeout=15)
-except Exception as e:
-print(f"⚠️  微信发送失败: {e}")
+    if not WEB_KEY:
+        return
+    url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WEB_KEY}"
+    try:
+        requests.post(url, json={"msgtype": "text", "text": {"content": content}}, timeout=15)
+    except Exception as e:
+        print(f"⚠️  微信发送失败: {e}")
 
 # ============================
 
